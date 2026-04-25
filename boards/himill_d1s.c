@@ -22,6 +22,9 @@
 #include "grbl/hal.h"
 #include "grbl/gcode.h"
 #include "grbl/stream.h"
+#include "grbl/protocol.h"
+#include "grbl/motion_control.h"
+#include "grbl/nvs_buffer.h"
 
 // HiMill stock bootloader lives at 0x08000000. It waits for a USB-CDC
 // handshake (0x51 0x05 0x0a) within a short window before jumping to
@@ -631,6 +634,120 @@ static void himill_stream_changed (stream_type_t type)
     }
 }
 
+// ---- Toolsetter cleaning before M6 ----
+//
+// $450=1 → before each M6 (after the first one of a session) hover the
+// spindle 5 mm above the toolsetter at G59.3 X/Y, run S13000 for 3 s,
+// stop. The spindle airflow blows aluminium chips off the toolsetter so
+// the standard $341=3 probe has a clean reference. Skipped on the first
+// toolchange (no TLR captured yet ⇒ haven't cut anything ⇒ nothing to
+// clean). Default Off — only enable if the tester actually needs it.
+//
+// Coords are read live from G59.3 (seeded by share/d1s/d1_factory.nc).
+// RPM/dwell/lift are compile-time constants today; promote to settings
+// later if testers report different needs.
+
+#define HIMILL_CLEAN_RPM      13000.0f
+#define HIMILL_CLEAN_DWELL_S  3.0f
+#define HIMILL_CLEAN_Z_LIFT   5.0f
+
+typedef struct {
+    bool enable;
+} himill_settings_t;
+
+static himill_settings_t himill_settings;
+static nvs_address_t himill_nvs_address;
+static on_tool_selected_ptr on_tool_selected;
+
+static const setting_group_detail_t himill_setting_groups[] = {
+    { Group_Root, Group_UserSettings, "HiMill D1S" }
+};
+
+static status_code_t himill_set_clean (setting_id_t id, uint_fast16_t value)
+{
+    himill_settings.enable = !!value;
+    hal.nvs.memcpy_to_nvs(himill_nvs_address, (uint8_t *)&himill_settings, sizeof(himill_settings_t), true);
+    return Status_OK;
+}
+
+static uint32_t himill_get_clean (setting_id_t id)
+{
+    return himill_settings.enable ? 1 : 0;
+}
+
+static const setting_detail_t himill_setting_detail[] = {
+    { Setting_UserDefined_0, Group_UserSettings, "Clean toolsetter before M6", NULL, Format_Bool, NULL, NULL, NULL, Setting_NonCoreFn, himill_set_clean, himill_get_clean, NULL }
+};
+
+static void himill_settings_restore (void)
+{
+    himill_settings.enable = false;
+    hal.nvs.memcpy_to_nvs(himill_nvs_address, (uint8_t *)&himill_settings, sizeof(himill_settings_t), true);
+}
+
+static void himill_settings_load (void)
+{
+    if (hal.nvs.memcpy_from_nvs((uint8_t *)&himill_settings, himill_nvs_address, sizeof(himill_settings_t), true) != NVS_TransferResult_OK)
+        himill_settings_restore();
+}
+
+static setting_details_t himill_setting_details = {
+    .groups = himill_setting_groups,
+    .n_groups = sizeof(himill_setting_groups) / sizeof(setting_group_detail_t),
+    .settings = himill_setting_detail,
+    .n_settings = sizeof(himill_setting_detail) / sizeof(setting_detail_t),
+    .save = settings_write_global,
+    .load = himill_settings_load,
+    .restore = himill_settings_restore
+};
+
+static void himill_clean_toolsetter (tool_data_t *tool)
+{
+    coord_system_data_t g59_3;
+    plan_line_data_t plan_data;
+    float target[N_AXIS];
+
+    if (!himill_settings.enable)
+        goto chain;
+    // Skip on first M6 of the session: no TLR yet ⇒ nothing has been cut
+    // yet ⇒ no chips to blow off.
+    if (!(sys.tlo_reference_set.mask & bit(Z_AXIS)))
+        goto chain;
+    if (!settings_read_coord_data(CoordinateSystem_G59_3, &g59_3))
+        goto chain;
+
+    // clean_z = TLR + current TLO + 5 mm  (machine coords).
+    // TLR is stored as steps; convert via Z's steps/mm.
+    float tlr_mm = (float)sys.tlo_reference[Z_AXIS] / settings.axis[Z_AXIS].steps_per_mm;
+    float clean_z = tlr_mm + gc_state.modal.tool_length_offset[Z_AXIS] + HIMILL_CLEAN_Z_LIFT;
+
+    system_convert_array_steps_to_mpos(target, sys.position);
+    target[X_AXIS] = g59_3.coord.values[X_AXIS];
+    target[Y_AXIS] = g59_3.coord.values[Y_AXIS];
+    target[Z_AXIS] = clean_z;
+
+    plan_data_init(&plan_data);
+    plan_data.condition.rapid_motion = On;
+
+    if (!mc_line(target, &plan_data))
+        goto chain;
+    if (!protocol_buffer_synchronize())
+        goto chain;
+
+    spindle_t *sp = gc_spindle_get(-1);
+    if (sp && sp->hal) {
+        spindle_state_t on  = { .on = 1 };
+        spindle_state_t off = { 0 };
+        spindle_set_state(sp->hal, on, HIMILL_CLEAN_RPM);
+        delay_sec(HIMILL_CLEAN_DWELL_S, DelayMode_Dwell);
+        spindle_set_state(sp->hal, off, 0.0f);
+    }
+
+chain:
+    if (on_tool_selected)
+        on_tool_selected(tool);
+}
+
 static void on_report_options_himill (bool newopt)
 {
     if (on_report_options)
@@ -669,6 +786,13 @@ void board_init (void)
 
     on_stream_changed       = grbl.on_stream_changed;
     grbl.on_stream_changed  = himill_stream_changed;
+
+    // Toolsetter cleaning hook — fires before each M6, gated by $450.
+    if ((himill_nvs_address = nvs_alloc(sizeof(himill_settings_t)))) {
+        on_tool_selected      = grbl.on_tool_selected;
+        grbl.on_tool_selected = himill_clean_toolsetter;
+        settings_register(&himill_setting_details);
+    }
 
     // Stream multiplexer: claim UART2 alongside USB CDC and re-route
     // hal.stream's read/write to a mux that polls both. Done here in

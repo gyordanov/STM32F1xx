@@ -35,19 +35,29 @@ starting point for any future debugging session.
 These all work cleanly on our grblHAL build:
 
 - Motion: X/Y up to 2000 mm/min, Z 1500 mm/min (TMCs forced to fast mode at boot via PD2)
-- Homing: X/Y/Z with `$23=3` (X+Y home in negative direction per switch placement)
+- Homing: X/Y/Z with `$23=1` + `$3=2` (Y motor reversed in stock D1S wiring; bake both)
 - Limits: X/Y/Z hard limits via PC0/PC1/PC2 EXTI
-- Probe + toolsetter: PA1 = toolsetter, PB2 = 3D probe (G65P5Q1/Q0 selects)
+- Probe + toolsetter: PA1 = toolsetter, PB2 = 3D probe (`G65P5Q1` / `Q0` selects)
 - Spindle: PWM on PB8 (TIM4_CH3), $33=10000 Hz, $36=99 (avoid 100% no-toggle issue)
 - Spindle ramping: $9 bit 3 + $394 / $539 = 1.0 s
-- E-stop on PB4 (when `CONTROL_ENABLE=64`) — but see Open Issues
+- E-stop on PB4 with `CONTROL_ENABLE=64`
 - Fast mode steppers (PD2 driven HIGH at boot)
 - SD card: `$F`, `$FM` work
 - A axis as rotary ($376=8)
 - ESP3D bridge for websocket clients (`ws://<ip>:8282`) works cleanly
 - ESP3D bridge for telnet clients mostly works, but see Open Issues
-- Polled buttons on PB1/PC4 via `grbl.on_execute_realtime` shim
-- `[BOOT]` / `[DFU]` user commands routed through `himill_user_command`
+- Polled buttons on PC4 (cycle-start) via `grbl.on_execute_realtime` shim
+- `[BOOT]` / `[DFU]` / `[LASER_MODE]` / `[ESP*]` user commands routed
+  through `himill_user_command` — laser mode toggles spindle output
+  PB8↔PB0 plus PC5 enable
+- Jog cancel works correctly on telnet/WS — was a stream-mux gap
+  (`cancel_read_buffer` missed); fixed 2026-04-25
+- Toolsetter cleanup hook on `grbl.on_tool_selected`: optional via
+  `$450=1`, hovers spindle 5 mm above toolsetter at G59.3 X/Y, runs
+  S13000 for 3 s before each M6 (skipped on the very first M6 of the
+  session — no TLR yet ⇒ nothing has been cut yet ⇒ no chips). Default
+  Off. Use case: aluminum chips covering the toolsetter; spindle
+  airflow blows them off.
 
 ## Open issues / unknowns
 
@@ -177,7 +187,7 @@ Current `[env:himill_d1s]` flags worth knowing:
 | `SERIAL_PORT` | 2 | Register UART2 (PA2/PA3) as a stream |
 | `TX_BUFFER_SIZE` | 8192 | Big enough for full $esh dump (~10 KB) without blocking |
 | `RX_BUFFER_SIZE` | 512 | Default — RX is fine |
-| `CONTROL_ENABLE` | 0 | DIAGNOSTIC — e-stop currently disabled |
+| `CONTROL_ENABLE` | 64 | E-stop on PB4 (bit 6 = `CONTROL_ESTOP`) |
 | `SAFETY_DOOR_ENABLE` | (off) | Door is dual-purpose, not bound; polled instead |
 | `TOOLSETTER_ENABLE` | 1 | PA1 = toolsetter, PB2 = primary probe |
 | `MACROS_ENABLE` | 1 | Macros plugin (button-action mappings) |
@@ -189,13 +199,15 @@ Current `[env:himill_d1s]` flags worth knowing:
 ## Settings baked as `-D DEFAULT_*` flags
 
 All in `[env:himill_d1s].build_flags`:
-- $0=7 (step pulse), $1=25 (idle delay), $4=15 (enable invert all axes)
+- $0=7 (step pulse), $1=255 (idle delay = hold forever; required for TMC standalone)
+- $3=2 (Y direction inverted), $4=15 (enable invert all axes)
 - $5=7 (limit invert NC switches), $6=1 (probe invert)
 - $9 ramp bit, $14=64 (e-stop invert), $16=4 (PWM invert)
-- $21=1, $22=43, $23=3 (limits/homing/dir per axis)
+- $21=1 (hard limits), $22=43 (homing options), $23=1 (X home -, Y home +)
 - $24=25 (homing slow feed), $27=1.0 (pulloff)
 - $30=13000, $33=10000, $36=99 (spindle envelope)
-- $40=1 (jog soft limit), $341=3 (manual M6 toolchange)
+- $40=1 (jog soft limit), $341=3 (auto-touchoff M6 toolchange)
+- $346 bit1+bit2 (toolchange at G30, fast probe pulloff)
 - $394=1.0, $539=1.0 (spindle ramp times)
 - $100-103=1600/1600/1600/88.889 (steps/mm)
 - $110/$111=2000, $112=1500, $113=2000 (max rates)
@@ -205,9 +217,11 @@ All in `[env:himill_d1s].build_flags`:
 ## Files modified in our work
 
 - `boards/himill_d1s_map.h` — pin map per HiMill CSV + comments on EXTI constraints
-- `boards/himill_d1s.c` — board init, [BOOT]/[DFU]/[ESP] user commands,
-  realtime hook for button polling, USB-CDC ↔ UART2 mux, fast-mode-always
-  PD2 drive, pause-on-SD-job
+- `boards/himill_d1s.c` — board init, [BOOT]/[DFU]/[ESP*]/[LASER_MODE]
+  user commands, realtime hook for button polling, full USB-CDC ↔ UART2
+  stream mux (covers all 15 io_stream_t methods incl. `cancel_read_buffer`
+  for jog-cancel), fast-mode-always PD2 drive, pause-on-SD-job, optional
+  toolsetter cleanup hook ($450) on `grbl.on_tool_selected`
 - `Inc/driver.h` — added PB8 TIM4_CH3 to spindle PWM resolver, added
   BOARD_HIMILL_D1S include
 - `Src/driver.c` — added `#ifdef COOLANT_FLOOD_PIN` guard
@@ -231,21 +245,37 @@ documentation; this folder is the firmware-side research.
   hits flash-loader bugs; 100 kHz is reliable)
 - `pio run -e himill_d1s` for builds
 
-## Next session: where to pick up
+## What's left
 
-1. **Decide whether telnet matters enough to chase.**
-   - If no: standardize on websocket (`ws://<ip>:8282`) and move on.
-   - If yes: inspect or rebuild ESP3D telnet behavior first.
-2. **MaxMake `DS:<bits>` compatibility decision.**
-   - Keep stock grblHAL behavior, or
-   - Add a custom status extension to mirror vendor semantics for door /
-     key / probe / estop-adjacent signals.
-3. **Rotary axis testing** — N_AXIS=4 + DEFAULT_AXIS_ROTATIONAL_MASK=8
-   built but not yet exercised end-to-end with a real rotary.
-4. **Laser routing decision** — currently single-spindle-with-laser-mode
-   (`$32=1`); could be split into dual-spindle (PB8 + PB0/PC5).
-5. **WS2812 LEDs** — PB5 ring + PB15 indicator, both signal-inverted, not
-   yet driven.
+Decided / done since previous notes:
+
+- Telnet vs WS — websocket is the canonical network path. Telnet is left as-is.
+- Laser routing — `[LASER_MODE:0|1]` ships in firmware (PB0 TIM3_CH3 + PC5).
+- Rotary axis — wired and exercised; user has the rotary working.
+- Stream mux completeness — fixed (jog cancel, $esh long output).
+- Toolsetter chip-cleanup — `$450=1` opt-in hook landed.
+- Y axis direction — `$3=2` + `$23=1` bake mirrors stock D1S.
+
+Still on the list:
+
+1. **First-boot preset** — share/d1s/d1_factory.nc seeds G30 + G59.3
+   per-machine. Once we see variance across 3+ testers, decide whether
+   to keep the SD-card macro or move to firmware NVS seeding (#88).
+2. **WS2812 LEDs** — PB5 ring + PB15 indicator. Flash budget is fine
+   (~48 KB headroom); blocker is bit-bang timing under our IRQ load.
+   Re-try via SPI1_MOSI on PB5 hardware — sidesteps the timing issue.
+3. **`himill` utility script** consolidation — currently
+   `himill_flash.py` only flashes. Add: `wifi`, `scan`, `status`, `ip`,
+   optional static IP. Tracked as #79–#83/#85.
+4. **`[ESP*]` tunnel close** — append newline so subsequent terminal
+   prompts render cleanly (#86).
+5. **Bootloader handshake race** — occasional flaky [BOOT] response
+   needs port-reopen retry on the host side (#85).
+6. **Per-tester `tc.macro`** if testers want full M6 replacement
+   (alternative to the on_tool_selected hook). NGC_EXPRESSIONS is the
+   only blocker — costs ~2.5 KB flash, fits only by giving up
+   ROTATION_ENABLE or going COMPATIBILITY_LEVEL=2. Stay at the hook for
+   now.
 
 ## Resume checklist
 
