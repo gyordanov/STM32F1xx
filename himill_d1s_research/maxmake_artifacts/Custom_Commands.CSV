@@ -1,0 +1,24 @@
+Command,Function
+[STREAM_START],Added at the start of the program to control button lights; automatically added by the lower computer when processing files
+[STREAM_END],Added at the end of the program
+"[SET_OFFSET]
+G10L1P1Z0
+G43H1
+G92Z0",Set the current tool as the reference tool and set the current Z coordinate to Z0
+[SAFETY_DOOR_EN:0/1],Safety door enable configuration
+?,"Query device status (reply with DS:); returns 16-bit data: 
+Bit 0: X-axis limit status; 
+Bit 1: Y-axis limit status; 
+Bit 2: Z-axis limit status; 
+Bit 3: Safety door enable status; 
+Bit 4: Safety door trigger status; 
+Bit 5: KEY button status; 
+Bit 6: Tool setter connection status; 
+Bit 7: Height probe trigger status; 
+Bit 8: Emergency stop trigger status; 
+Bits 9¨C15: Reserved"
+[LASER_MODE:0/1],0: Smooth mode / Spindle mode; 1: Fast mode / Laser mode
+[SD_FORMAT],Format the SD card
+[SD_FREE],Get remaining space of the SD card
+[SD_FILE_CANCEL],Cancel the pending processing file
+[SD_FILE_READY:xx.nc],Set the existing xx.nc file in the SD card as the pending processing file

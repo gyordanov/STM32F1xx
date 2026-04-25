@@ -1,0 +1,33 @@
+HiMill D1/D1S Main_Control_Board_IO_Pin_Description,,,,
+No.,Name,Pin,Function,Description
+1,X_Pulse,PB6,X-axis Stepper Motor Pulse Signal,Rising edge trigger
+2,Y_Pulse,PB14,Y-axis Stepper Motor Pulse Signal,Rising edge trigger
+3,Z_Pulse,PB13,Z-axis Stepper Motor Pulse Signal,Rising edge trigger
+4,A_Pulse,PB12,A-axis Stepper Motor Pulse Signal,Rising edge trigger
+5,X_Dir,PC12,X-axis Stepper Motor Direction Signal,High level for positive direction
+6,Y_Dir,PC8,Y-axis Stepper Motor Direction Signal,High level for positive direction
+7,Z_Dir,PC7,Z-axis Stepper Motor Direction Signal,High level for positive direction
+8,A_Dir,PC6,A-axis Stepper Motor Direction Signal,High level for positive direction
+9,STEPPER_EN,PA15,XYZ Stepper Motor Enable Signal,High level enable
+10,STEPPER_MODE,PD2,XYZ Stepper Motor Mode Signal,Low level for silent mode (CNC mode); High level for high-speed mode (laser mode)
+11,X_Limit,PC0,X-axis Limit Switch Signal,Low level trigger
+12,Y_Limit,PC1,Y-axis Limit Switch Signal,Low level trigger
+13,Z_Limit,PC2,Z-axis Limit Switch Signal,Low level trigger
+14,SPINDLE_EN,PB9,Spindle Motor Enable Signal,High level enable
+15,SPINDLE_PWM,PB8,Spindle Motor PWM Signal,"Low level for output, using active-low PWM to control speed"
+16,LASER_EN,PC5,Laser Enable Signal,High level enable
+17,LASER_PWM,PB0,Laser Power Signal,"Low level for output, using active-low PWM to control power"
+18,TOOL_SETTER,PA1,Tool Setter Signal,Low level trigger
+19,3D_PROBE,PB2,3D Probe Signal,Low level trigger
+20,LED_1,PB5,Progress LED Control,"Signal inversion required, using WS2812, total 24 LEDs"
+21,LED_2,PB15,Auxiliary Signal LED Control,"Signal inversion required: using WS2812, total 1 LED"
+22,BUTTON,PC4,Button Input,Low level trigger
+23,SAFETY_DOOR,PB1,Safety Door Input Signal,High level when door is closed
+24,SD_CS,PA4,SD Card CS Signal,
+25,SD_CLK,PA5,SD Card CLK Signal,
+26,SD_MISO,PA6,SD Card MISO Signal,
+27,SD_MOSI,PA7,SD Card MOSI Signal,
+28,USB_N,PA11,External USB_N Signal,
+29,USB_P,PA12,External USB_P Signal,
+30,ESP_TX,PA2,WiFi Module UART TX Signal,Baud rate 115200
+31,ESP_RX,PA3,WiFi Module UART RX Signal,

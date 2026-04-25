@@ -29,6 +29,9 @@
 //#define BOARD_SVM
 //#define BOARD_CREALITY_V4_2_2 // Not tested!
 //#define BOARD_CREALITY_V4_2_7 // Not tested!
+//#define BOARD_HIMILL_D1S // HiMill D1/D1S 4-axis CNC with TMC drivers in standalone mode.
+                           // Keep HiMill's bootloader at 0x08000000 — app must link to 0x08004000.
+                           // Set N_ABC_MOTORS=1 for the A axis.
 //#define BOARD_MY_MACHINE // Add my_machine_map.h before enabling this!
 
 // Configuration

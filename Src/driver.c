@@ -1784,10 +1784,12 @@ static bool driver_setup (settings_t *settings)
 
 #endif // DRIVER_SPINDLE_ENABLE & SPINDLE_PWM
 
- // Coolant init (??)
+ // Coolant init
 
+#ifdef COOLANT_FLOOD_PIN
     BITBAND_PERI(COOLANT_FLOOD_PORT->ODR, COOLANT_FLOOD_PIN) = 1;
     BITBAND_PERI(COOLANT_FLOOD_PORT->ODR, COOLANT_FLOOD_PIN) = 0;
+#endif
 
 #ifdef COOLANT_MIST_PIN
     BITBAND_PERI(COOLANT_MIST_PORT->ODR, COOLANT_MIST_PIN) = 1;
