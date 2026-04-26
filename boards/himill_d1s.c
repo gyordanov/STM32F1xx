@@ -550,15 +550,32 @@ static inline void laser_pwm_mirror (void)
 static void himill_poll_buttons (sys_state_t state)
 {
     // PC4 = front-panel + inside-door buttons (parallel-wired, active-low).
+    // PB1 = door switch.
+    //
+    // We dispatch button presses through `hal.control.interrupt_callback`
+    // (the SAME path a hardware aux-input pin would take), NOT through
+    // `grbl.enqueue_realtime_command()`. Why: during M6 wait state grblHAL
+    // installs `trap_control_cycle_start` on hal.control.interrupt_callback
+    // which advances the toolchange state machine (probe / return-from-G30).
+    // Going through grbl.enqueue_realtime_command bypasses that trap on this
+    // mux configuration — the byte hits protocol_enqueue_realtime_command
+    // raw, which during M6 is interpreted as "cancel the toolchange". The
+    // FlexiHAL behavior of "physical CYCLE_START button confirms M6" only
+    // works because that path uses the control-signal callback. Match it.
     bool pc4_pressed = !DIGITAL_IN(GPIOC, 4);
-    if (pc4_pressed && !button_pc4_prev_pressed)
-        grbl.enqueue_realtime_command(CMD_CYCLE_START);
+    if (pc4_pressed && !button_pc4_prev_pressed && hal.control.interrupt_callback) {
+        control_signals_t signals = {0};
+        signals.cycle_start = On;
+        hal.control.interrupt_callback(signals);
+    }
     button_pc4_prev_pressed = pc4_pressed;
 
-    // PB1 = door switch (active-low when door open per HiMill CSV).
     bool pb1_pressed = !DIGITAL_IN(GPIOB, 1);
-    if (pb1_pressed && !button_pb1_prev_pressed)
-        grbl.enqueue_realtime_command(CMD_SAFETY_DOOR);
+    if (pb1_pressed && !button_pb1_prev_pressed && hal.control.interrupt_callback) {
+        control_signals_t signals = {0};
+        signals.safety_door_ajar = On;
+        hal.control.interrupt_callback(signals);
+    }
     button_pb1_prev_pressed = pb1_pressed;
 
     // Laser-mode mirror: copy spindle PWM duty + enable to laser hardware
