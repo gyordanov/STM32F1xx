@@ -44,9 +44,14 @@ Important details:
 Implemented in:
 
 - `boards/himill_d1s.c`
+- `STM32F103RCTX_HIMILL_D1S_FLASH.ld`
 
 The `[BOOT]` handler now uses the SRAM magic + reset sequence instead of the
 old message+reset path.
+
+The HiMill linker script reserves the top 16 SRAM bytes so the normal app stack
+cannot overwrite the bootloader handoff word at `0x2000BFF0`. The shared
+`STM32F103RCTX_FLASH.ld` is intentionally left generic for non-HiMill boards.
 
 ## How the flag was found
 

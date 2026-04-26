@@ -12,7 +12,7 @@
     MCU:     STM32F103RCT6    — LQFP-64, 256 KB flash, 48 KB RAM
     HSE:     8.000 MHz        — Hosonic HX-C 8.0 SMD crystal
     Startup: StartupRC/startup_stm32f103rctx.s (existing)
-    Linker:  STM32F103RCTX_FLASH.ld (existing BTT SKR Mini E3 variant)
+    Linker:  STM32F103RCTX_HIMILL_D1S_FLASH.ld
 
   Bootloader offset (verified against MaxMake v1.0.34 official app):
     Bootloader code: 0x08000000-0x08003E10 (16 KB used, 32 KB reserved)

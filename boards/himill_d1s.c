@@ -78,6 +78,14 @@ static const io_stream_t *mux_usb         = NULL;
 static const io_stream_t *mux_uart        = NULL;
 static bool               mux_initialized = false;
 static uint8_t            telnet_iac_state = 0;
+static const io_stream_t *mux_rx_line_owner = NULL;
+static const io_stream_t *mux_last_rx_owner = NULL;
+static const io_stream_t *mux_reply_owner = NULL;
+static const io_stream_t *mux_suspended_stream = NULL;
+static enqueue_realtime_command_ptr mux_rt_handler = protocol_enqueue_realtime_command;
+static const io_stream_t *mux_rt_owner = NULL;
+static bool mux_rt_owner_locked = false;
+static int32_t esp_tunnel_pending = SERIAL_NO_DATA;
 // Tunnel window for [ESP*] command responses: while non-zero, UART2 RX is
 // owned exclusively by the himill_poll_buttons drainer that mirrors bytes
 // to USB CDC TX. mux_read suppresses its USB→UART fallback while this is
@@ -92,17 +100,94 @@ static const io_stream_t *mux_active (void)
     return mux_uart;
 }
 
+static bool mux_stream_connected (const io_stream_t *s)
+{
+    if (!s)
+        return false;
+
+    // UART2 is hard-wired to ESP3D. USB is considered connected only when
+    // the host has asserted DTR and the USB driver has accepted it.
+    return s == mux_uart || !s->is_connected || s->is_connected();
+}
+
+static const io_stream_t *mux_owned_or_active (void)
+{
+    if (mux_rx_line_owner && mux_stream_connected(mux_rx_line_owner))
+        return mux_rx_line_owner;
+
+    if (mux_reply_owner && mux_stream_connected(mux_reply_owner))
+        return mux_reply_owner;
+
+    return mux_active();
+}
+
+static const io_stream_t *mux_command_or_active (void)
+{
+    if (mux_rx_line_owner && mux_stream_connected(mux_rx_line_owner))
+        return mux_rx_line_owner;
+
+    if (mux_last_rx_owner && mux_stream_connected(mux_last_rx_owner))
+        return mux_last_rx_owner;
+
+    if (mux_reply_owner && mux_stream_connected(mux_reply_owner))
+        return mux_reply_owner;
+
+    return mux_active();
+}
+
+static const io_stream_t *mux_write_target (void)
+{
+    return mux_stream_connected(mux_reply_owner) ? mux_reply_owner : mux_active();
+}
+
+static void mux_note_rx_byte (const io_stream_t *s, int32_t c)
+{
+    if (!mux_rx_line_owner)
+        mux_rx_line_owner = s;
+
+    mux_last_rx_owner = mux_rx_line_owner;
+    mux_reply_owner = mux_rx_line_owner;
+
+    if (c == ASCII_CR || c == ASCII_LF || c == ASCII_EOF)
+        mux_rx_line_owner = NULL;
+}
+
+static bool mux_enqueue_rt_from (const io_stream_t *source, uint8_t c)
+{
+    bool drop;
+    enqueue_realtime_command_ptr handler = mux_rt_handler ? mux_rt_handler : protocol_enqueue_realtime_command;
+
+    mux_reply_owner = source;
+
+    if (mux_rt_owner_locked && mux_rt_owner && source != mux_rt_owner)
+        drop = protocol_enqueue_realtime_command(c);
+    else
+        drop = handler(c);
+
+    return drop;
+}
+
+static bool mux_usb_enqueue_rt (uint8_t c)
+{
+    return mux_enqueue_rt_from(mux_usb, c);
+}
+
+static bool mux_uart_enqueue_rt (uint8_t c)
+{
+    return mux_enqueue_rt_from(mux_uart, c);
+}
+
 static bool mux_is_connected (void)
 {
     // UART2 is hard-wired to the ESP32 bridge, so for the board's primary
     // runtime path it should count as connected even when USB DTR is low.
-    return mux_uart != NULL || (mux_usb && mux_usb->is_connected && mux_usb->is_connected());
+    return mux_stream_connected(mux_uart) || mux_stream_connected(mux_usb);
 }
 
 static int32_t mux_read (void)
 {
     for (;;) {
-        const io_stream_t *s = mux_active();
+        const io_stream_t *s = mux_rx_line_owner ? mux_rx_line_owner : mux_active();
         int32_t c = (s && s->read) ? s->read() : SERIAL_NO_DATA;
 
         // If USB is currently "active" but has no byte ready, fall back to UART
@@ -113,7 +198,8 @@ static int32_t mux_read (void)
         // UART RX buffer and ESP3D's JSON response gets split between the
         // tunnel (mirrored to USB) and grblHAL's parser (which then errors
         // out trying to interpret JSON as gcode).
-        if (c == SERIAL_NO_DATA && s == mux_usb && esp_tunnel_until_ms == 0
+        if (c == SERIAL_NO_DATA && mux_rx_line_owner == NULL && s == mux_usb
+                && esp_tunnel_until_ms == 0
                 && mux_uart && mux_uart->read) {
             s = mux_uart;
             c = mux_uart->read();
@@ -132,6 +218,7 @@ static int32_t mux_read (void)
                     telnet_iac_state = 1;
                     continue;
                 }
+                mux_note_rx_byte(s, c);
                 return c;
 
             case 1: // seen IAC
@@ -164,26 +251,27 @@ static int32_t mux_read (void)
                 continue;
         }
 
+        mux_note_rx_byte(s, c);
         return c;
     }
 }
 
 static void mux_write (const char *str)
 {
-    const io_stream_t *s = mux_active();
+    const io_stream_t *s = mux_write_target();
     if (s && s->write)
         s->write(str);
 }
 
 static bool mux_write_char (const uint8_t c)
 {
-    const io_stream_t *s = mux_active();
+    const io_stream_t *s = mux_write_target();
     return (s && s->write_char) ? s->write_char(c) : false;
 }
 
 static void mux_write_n (const uint8_t *data, uint16_t length)
 {
-    const io_stream_t *s = mux_active();
+    const io_stream_t *s = mux_write_target();
 
     if (!s)
         return;
@@ -201,26 +289,28 @@ static void mux_write_n (const uint8_t *data, uint16_t length)
 
 static void mux_write_all (const char *str)
 {
-    const io_stream_t *s = mux_active();
-    if (s && s->write)
-        s->write(str);
+    if (mux_stream_connected(mux_uart) && mux_uart->write)
+        mux_uart->write(str);
+
+    if (mux_stream_connected(mux_usb) && mux_usb != mux_uart && mux_usb->write)
+        mux_usb->write(str);
 }
 
 static uint16_t mux_get_rx_buffer_count (void)
 {
-    const io_stream_t *s = mux_active();
+    const io_stream_t *s = mux_owned_or_active();
     return (s && s->get_rx_buffer_count) ? s->get_rx_buffer_count() : 0;
 }
 
 static uint16_t mux_get_rx_buffer_free (void)
 {
-    const io_stream_t *s = mux_active();
+    const io_stream_t *s = mux_owned_or_active();
     return (s && s->get_rx_buffer_free) ? s->get_rx_buffer_free() : 0xFFFF;
 }
 
 static uint16_t mux_get_tx_buffer_count (void)
 {
-    const io_stream_t *s = mux_active();
+    const io_stream_t *s = mux_write_target();
     return (s && s->get_tx_buffer_count) ? s->get_tx_buffer_count() : 0;
 }
 
@@ -230,6 +320,8 @@ static void mux_reset_read_buffer (void)
         mux_usb->reset_read_buffer();
     if (mux_uart && mux_uart->reset_read_buffer)
         mux_uart->reset_read_buffer();
+
+    mux_rx_line_owner = NULL;
 }
 
 // CMD_JOG_CANCEL (0x85) and other paths call this. The serial driver
@@ -242,9 +334,11 @@ static void mux_reset_read_buffer (void)
 // regardless of release.
 static void mux_cancel_read_buffer (void)
 {
-    const io_stream_t *s = mux_active();
+    const io_stream_t *s = mux_owned_or_active();
     if (s && s->cancel_read_buffer)
         s->cancel_read_buffer();
+
+    mux_rx_line_owner = NULL;
 }
 
 static void mux_reset_write_buffer (void)
@@ -269,25 +363,24 @@ static bool mux_disable_rx (bool disable)
 
 static bool mux_suspend_read (bool suspend)
 {
-    const io_stream_t *s = mux_active();
-    return (s && s->suspend_read) ? s->suspend_read(suspend) : false;
+    const io_stream_t *s = suspend ? mux_command_or_active()
+                                   : (mux_suspended_stream ? mux_suspended_stream : mux_owned_or_active());
+    bool ok = (s && s->suspend_read) ? s->suspend_read(suspend) : false;
+
+    if (ok)
+        mux_suspended_stream = suspend ? s : NULL;
+
+    return ok;
 }
 
 static enqueue_realtime_command_ptr mux_set_enqueue_rt_handler (enqueue_realtime_command_ptr handler)
 {
-    enqueue_realtime_command_ptr prev = NULL;
-    const io_stream_t *s = mux_active();
+    enqueue_realtime_command_ptr prev = mux_rt_handler;
 
-    if (mux_usb && mux_usb->set_enqueue_rt_handler) {
-        enqueue_realtime_command_ptr usb_prev = mux_usb->set_enqueue_rt_handler(handler);
-        if (s == mux_usb)
-            prev = usb_prev;
-    }
-
-    if (mux_uart && mux_uart->set_enqueue_rt_handler) {
-        enqueue_realtime_command_ptr uart_prev = mux_uart->set_enqueue_rt_handler(handler);
-        if (prev == NULL || s == mux_uart)
-            prev = uart_prev;
+    if (handler) {
+        mux_rt_handler = handler;
+        mux_rt_owner = mux_command_or_active();
+        mux_rt_owner_locked = handler != protocol_enqueue_realtime_command;
     }
 
     return prev;
@@ -478,14 +571,22 @@ static void himill_poll_buttons (sys_state_t state)
     // the command from. Bypasses mux_active so it works while DTR-mux is
     // pointed at USB.
     if (esp_tunnel_until_ms != 0) {
-        if ((int32_t)(hal.get_elapsed_ticks() - esp_tunnel_until_ms) >= 0) {
+        if (esp_tunnel_pending == SERIAL_NO_DATA
+                && (int32_t)(hal.get_elapsed_ticks() - esp_tunnel_until_ms) >= 0) {
             esp_tunnel_until_ms = 0;
         } else if (mux_uart && mux_uart->read && mux_usb && mux_usb->write_char) {
             for (uint16_t i = 0; i < 64; i++) {  // bounded per-tick drain
-                int32_t c = mux_uart->read();
+                int32_t c = esp_tunnel_pending;
+                if (c == SERIAL_NO_DATA)
+                    c = mux_uart->read();
                 if (c == SERIAL_NO_DATA)
                     break;
-                mux_usb->write_char((char)c);
+                if (mux_usb->write_char((uint8_t)c))
+                    esp_tunnel_pending = SERIAL_NO_DATA;
+                else {
+                    esp_tunnel_pending = c;
+                    break;
+                }
             }
         }
     }
@@ -558,9 +659,10 @@ static status_code_t himill_user_command (char *line)
         //     consume (ESP3D filters [ESP*] from network clients before
         //     forwarding to STM32, so anything reaching us came from
         //     ESP3D itself).
-        if (mux_active() == mux_usb && mux_uart && mux_uart->write && mux_uart->write_char) {
+        if (mux_last_rx_owner == mux_usb && mux_uart && mux_uart->write && mux_uart->write_char) {
             mux_uart->write(line);
             mux_uart->write_char('\n');
+            esp_tunnel_pending = SERIAL_NO_DATA;
             esp_tunnel_until_ms = hal.get_elapsed_ticks() + ESP_TUNNEL_WINDOW_MS;
         }
         return Status_OK;
@@ -591,14 +693,16 @@ static status_code_t himill_user_command (char *line)
 
     // Exact match — don't swallow [BOOTSOMETHING]
     if (strcmp(line, "[BOOT]") == 0) {
-        // Match the vendor app's bootloader handoff: write magic to SRAM,
-        // wait briefly, then request a system reset. The bootloader checks
-        // 0x2000BFF0 for this exact value very early at startup.
+        // Match the vendor app's bootloader handoff: write magic to the
+        // reserved top-of-SRAM word, then request a system reset. Interrupts
+        // are disabled before the write so no ISR stack traffic can collide
+        // with the handoff word before reset.
+        __disable_irq();
         *HIMILL_BOOTFLAG_ADDR = HIMILL_BOOTFLAG_MAGIC;
+        __DSB();
         for (volatile uint32_t i = 0; i < 720000; i++);  // ~10 ms at 72 MHz
 
         __set_FAULTMASK(1);
-        __DSB();
         SCB->AIRCR = (SCB->AIRCR & 0x00000700UL) | 0x05FA0004UL;
         __DSB();
         for (;;)
@@ -803,10 +907,15 @@ void board_init (void)
     if (mux_usb) {
         stream_enumerate_streams(mux_find_uart, NULL);
         if (mux_uart) {
-            // Install our wrapper functions on hal.stream. Each call
-            // picks USB or UART dynamically via mux_active() based on
-            // USB DTR state. UART is default; USB takes over when host
-            // opens /dev/ttyACM0.
+            if (mux_usb->set_enqueue_rt_handler)
+                mux_usb->set_enqueue_rt_handler(mux_usb_enqueue_rt);
+            if (mux_uart->set_enqueue_rt_handler)
+                mux_uart->set_enqueue_rt_handler(mux_uart_enqueue_rt);
+
+            // Install our wrapper functions on hal.stream. Input is owned
+            // per line so USB and ESP3D bytes cannot be interleaved into one
+            // parser command; ordinary replies follow that owner, while
+            // write_all broadcasts to connected outputs.
             hal.stream.is_connected        = mux_is_connected;
             hal.stream.read                = mux_read;
             hal.stream.write               = mux_write;

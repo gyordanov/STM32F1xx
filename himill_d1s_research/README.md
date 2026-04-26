@@ -143,6 +143,11 @@ Required sequence:
 `[BOOT]` in `boards/himill_d1s.c` now uses this mechanism and has been
 verified on hardware.
 
+The SRAM word is protected by the HiMill-only linker script
+`STM32F103RCTX_HIMILL_D1S_FLASH.ld`, which moves `_estack` down to
+`0x2000BFF0`. The shared `STM32F103RCTX_FLASH.ld` remains generic for other
+boards.
+
 See also:
 - `our_findings/session_2026-04-25_bootloader_flag_recovered.md`
 
@@ -285,8 +290,11 @@ When resuming this work:
 2. Check `our_findings/session_*.md` (when populated) for the most recent
    session's notes
 3. Run `pio run -e himill_d1s` to confirm a clean build
-4. Use `st-flash --freq=100 --reset write .pio/build/himill_d1s/firmware.bin 0x08008000`
-   for ST-LINK flashing (the slow speed avoids the loader bug)
-5. Check `EGSender/docs/controllers/himill_d1s.md` for sender-side context
-6. Memory file `project_d1s_firmware_flash.md` (auto-memory) has the
+4. Use `tools/himill_flash.py .pio/build/himill_d1s/firmware.bin` for normal
+   USB bootloader flashing via `[BOOT]`
+5. If using ST-LINK instead, use
+   `st-flash --freq=100 --reset write .pio/build/himill_d1s/firmware.bin 0x08008000`
+   (the slow speed avoids the loader bug)
+6. Check `EGSender/docs/controllers/himill_d1s.md` for sender-side context
+7. Memory file `project_d1s_firmware_flash.md` (auto-memory) has the
    session-to-session pointers
