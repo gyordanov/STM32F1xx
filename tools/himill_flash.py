@@ -9,6 +9,8 @@ Usage:
     tools/himill_flash.py [--port /dev/ttyACM0] [--no-boot] <firmware.bin>
     tools/himill_flash.py stm32 [--port /dev/ttyACM0] [--no-boot] <firmware.bin>
     tools/himill_flash.py esp3d --host <ip-or-url> [--password <admin-pwd>] <firmware.bin>
+    tools/himill_flash.py wifi-setup [--port /dev/ttyACM0]
+    tools/himill_flash.py wifi-status [--port /dev/ttyACM0]
 
 Examples:
     # Flash our grblHAL build, auto-detect port, let the running app
@@ -24,6 +26,10 @@ Examples:
     # Flash ESP3D over its HTTP /updatefw endpoint. This does NOT use the
     # SD-card firmware.bin -> firmware.bin.ok flow:
     tools/himill_flash.py esp3d --host 192.168.1.114 firmware_V1.0.2_20260407.bin
+
+    # Configure ESP3D WiFi over the STM32 USB serial bridge:
+    tools/himill_flash.py wifi-setup
+    tools/himill_flash.py wifi-status
 
 Protocol summary (values in hex, little-endian where multi-byte):
     Trigger (over running firmware's CDC):
@@ -49,6 +55,7 @@ Protocol summary (values in hex, little-endian where multi-byte):
 """
 
 import argparse
+import getpass
 import http.client
 import json
 import pathlib
@@ -80,6 +87,10 @@ HANDSHAKE_ACK = bytes.fromhex("a10401")
 
 CHUNK_SIZE = 1024
 HTTP_UPLOAD_CHUNK_SIZE = 64 * 1024
+USB_ESP_BAUDRATE = 115200
+USB_ESP_DEFAULT_TIMEOUT = 8.0
+USB_ESP_SCAN_TIMEOUT = 25.0
+USB_ESP_CONNECT_TIMEOUT = 45.0
 CMD_FULL   = 0x52  # full-size chunk
 CMD_FINAL  = 0x53  # partial last chunk
 ACK_PREFIX = 0xA2  # chunk ack first byte
@@ -556,6 +567,357 @@ def esp3d_wait_for_reboot(base, timeout):
           "so check the board manually before retrying.", file=sys.stderr)
 
 
+def usb_esp_escape_param(value):
+    if value is None:
+        return ""
+    if "\r" in value or "\n" in value:
+        sys.exit("ESP3D command parameters cannot contain newlines.")
+    if "\\" in value:
+        sys.exit("ESP3D serial command escaping cannot safely carry backslashes.")
+    return "".join(("\\" + c) if c.isspace() else c for c in value)
+
+
+def usb_esp_command_text(cmd, param=None, admin_password=None):
+    text = f"[ESP{cmd}]"
+    if param is not None:
+        text += usb_esp_escape_param(param)
+    text += " json"
+    if admin_password:
+        text += " pwd=" + usb_esp_escape_param(admin_password)
+    return text
+
+
+def extract_json_objects(text):
+    objects = []
+    start = None
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for idx, char in enumerate(text):
+        if start is None:
+            if char == "{":
+                start = idx
+                depth = 1
+                in_string = False
+                escaped = False
+            continue
+
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = text[start:idx + 1]
+                try:
+                    objects.append(json.loads(candidate))
+                except json.JSONDecodeError:
+                    pass
+                start = None
+
+    return objects
+
+
+def find_esp3d_json(raw, cmd):
+    cmd = str(cmd)
+    fallback = None
+    for obj in extract_json_objects(raw):
+        if fallback is None:
+            fallback = obj
+        if str(obj.get("cmd", "")) == cmd:
+            return obj
+    return fallback
+
+
+def open_usb_esp_serial(port):
+    ser = serial.Serial(port, baudrate=USB_ESP_BAUDRATE, timeout=0.1,
+                        write_timeout=2)
+    ser.dtr = True
+    ser.rts = False
+    time.sleep(0.25)
+    ser.reset_input_buffer()
+    return ser
+
+
+def usb_esp_command(ser, command, expected_cmd, timeout=USB_ESP_DEFAULT_TIMEOUT,
+                    raw=False):
+    ser.reset_input_buffer()
+    ser.write((command + "\n").encode("utf-8"))
+    ser.flush()
+
+    deadline = time.time() + timeout
+    buffer = bytearray()
+    while time.time() < deadline:
+        chunk = ser.read(512)
+        if chunk:
+            buffer.extend(chunk)
+            text = buffer.decode("utf-8", errors="replace")
+            obj = find_esp3d_json(text, expected_cmd)
+            if obj is not None:
+                return obj, text
+        else:
+            time.sleep(0.03)
+
+    text = buffer.decode("utf-8", errors="replace")
+    if raw:
+        return None, text
+    sys.exit(f"No ESP3D JSON response for {command!r} within {timeout:.1f}s.\n"
+             f"Raw response:\n{text.strip() or '(empty)'}")
+
+
+def ensure_esp_ok(response, label):
+    if str(response.get("status", "")).lower() != "ok":
+        sys.exit(f"{label} failed: {json.dumps(response, ensure_ascii=False)}")
+
+
+def esp420_map(response):
+    data = response.get("data", [])
+    if not isinstance(data, list):
+        return {}
+    result = {}
+    for item in data:
+        if isinstance(item, dict) and "id" in item:
+            result[str(item["id"])] = str(item.get("value", ""))
+    return result
+
+
+def print_wifi_status_from_map(status):
+    hostname = status.get("hostname", "?")
+    wifi = status.get("wifi", "?")
+    mode = status.get("wifi mode", "?")
+    ssid = status.get("SSID", "")
+    ip = status.get("ip", "")
+    signal = status.get("signal", "")
+
+    print(f"Hostname: {hostname}")
+    print(f"WiFi:     {wifi}")
+    print(f"Mode:     {mode}")
+    print(f"SSID:     {ssid or '(not connected)'}")
+    print(f"IP:       {ip or '(none)'}")
+    if signal:
+        print(f"Signal:   {signal}")
+
+
+def parse_scan_networks(response):
+    data = response.get("data", [])
+    if not isinstance(data, list):
+        return []
+
+    best_by_ssid = {}
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        ssid = str(item.get("SSID", ""))
+        if not ssid:
+            continue
+        try:
+            signal = int(str(item.get("SIGNAL", "0")).rstrip("%"))
+        except ValueError:
+            signal = 0
+        protected = str(item.get("IS_PROTECTED", "1")) == "1"
+        current = best_by_ssid.get(ssid)
+        if current is None or signal > current["signal"]:
+            best_by_ssid[ssid] = {
+                "ssid": ssid,
+                "signal": signal,
+                "protected": protected,
+            }
+
+    return sorted(best_by_ssid.values(), key=lambda item: item["signal"],
+                  reverse=True)
+
+
+def choose_wifi_network(networks):
+    if not networks:
+        sys.exit("No WiFi networks found.")
+
+    print("\nAvailable WiFi networks:")
+    for idx, network in enumerate(networks, start=1):
+        security = "secure" if network["protected"] else "open"
+        print(f"  {idx:2d}. {network['ssid']} "
+              f"({network['signal']}%, {security})")
+
+    while True:
+        choice = input(f"Select network [1-{len(networks)}]: ").strip()
+        if choice.isdigit():
+            index = int(choice)
+            if 1 <= index <= len(networks):
+                return networks[index - 1]
+        print("Invalid selection.")
+
+
+def wait_for_wifi_connection(ser, ssid, timeout, admin_password=None):
+    deadline = time.time() + timeout
+    last_status = {}
+    while time.time() < deadline:
+        try:
+            response, _ = usb_esp_command(
+                ser,
+                usb_esp_command_text("420", admin_password=admin_password),
+                "420",
+                timeout=USB_ESP_DEFAULT_TIMEOUT,
+                raw=True,
+            )
+        except (serial.SerialException, OSError):
+            response = None
+
+        if response:
+            last_status = esp420_map(response)
+            current_ssid = last_status.get("SSID", "")
+            current_ip = last_status.get("ip", "")
+            if current_ssid == ssid and current_ip and current_ip != "0.0.0.0":
+                return last_status
+
+        time.sleep(2.0)
+
+    return last_status
+
+
+def main_wifi_status(argv=None):
+    ap = argparse.ArgumentParser(
+        prog=f"{pathlib.Path(sys.argv[0]).name} wifi-status",
+        description="Print ESP3D WiFi SSID and IP over STM32 USB serial.")
+    ap.add_argument("--port",
+                    help="Serial port (auto-detect via VID:PID if omitted)")
+    ap.add_argument("--timeout", type=float, default=USB_ESP_DEFAULT_TIMEOUT)
+    ap.add_argument("--admin-password",
+                    help="ESP3D admin password if authentication is enabled")
+    ap.add_argument("--raw", action="store_true",
+                    help="Print the raw ESP3D JSON response too")
+    args = ap.parse_args(argv)
+
+    port = args.port or find_port()
+    with open_usb_esp_serial(port) as ser:
+        response, raw = usb_esp_command(
+            ser,
+            usb_esp_command_text("420", admin_password=args.admin_password),
+            "420",
+            timeout=args.timeout,
+        )
+
+    if args.raw:
+        print(raw.strip())
+    print_wifi_status_from_map(esp420_map(response))
+
+
+def main_wifi_setup(argv=None):
+    ap = argparse.ArgumentParser(
+        prog=f"{pathlib.Path(sys.argv[0]).name} wifi-setup",
+        description="Scan and configure ESP3D WiFi over STM32 USB serial.")
+    ap.add_argument("--port",
+                    help="Serial port (auto-detect via VID:PID if omitted)")
+    ap.add_argument("--ssid",
+                    help="Skip scan selection and use this SSID")
+    ap.add_argument("--password",
+                    help="WiFi password; prompts securely if omitted")
+    ap.add_argument("--admin-password",
+                    help="ESP3D admin password if authentication is enabled")
+    ap.add_argument("--scan-timeout", type=float, default=USB_ESP_SCAN_TIMEOUT)
+    ap.add_argument("--connect-timeout", type=float,
+                    default=USB_ESP_CONNECT_TIMEOUT)
+    ap.add_argument("--no-restart", action="store_true",
+                    help="Save settings but do not send [ESP444]RESTART")
+    ap.add_argument("--no-wait", action="store_true",
+                    help="Do not wait for WiFi to reconnect after restart")
+    args = ap.parse_args(argv)
+
+    port = args.port or find_port()
+    with open_usb_esp_serial(port) as ser:
+        print(f"→ USB serial: {port}")
+        print("→ Enabling ESP3D WIFI-STA mode")
+        response, _ = usb_esp_command(
+            ser,
+            usb_esp_command_text("110", "WIFI-STA",
+                                 admin_password=args.admin_password),
+            "110",
+            timeout=USB_ESP_DEFAULT_TIMEOUT,
+        )
+        ensure_esp_ok(response, "WIFI-STA mode")
+
+        if args.ssid:
+            selected = {"ssid": args.ssid, "protected": True, "signal": 0}
+        else:
+            print("→ Scanning WiFi networks")
+            response, _ = usb_esp_command(
+                ser,
+                usb_esp_command_text("410", admin_password=args.admin_password),
+                "410",
+                timeout=args.scan_timeout,
+            )
+            ensure_esp_ok(response, "WiFi scan")
+            selected = choose_wifi_network(parse_scan_networks(response))
+
+        ssid = selected["ssid"]
+        if args.password is not None:
+            password = args.password
+        elif selected["protected"]:
+            password = getpass.getpass(f"Password for {ssid}: ")
+        else:
+            password = ""
+
+        print(f"→ Setting STA SSID: {ssid}")
+        response, _ = usb_esp_command(
+            ser,
+            usb_esp_command_text("100", ssid,
+                                 admin_password=args.admin_password),
+            "100",
+            timeout=USB_ESP_DEFAULT_TIMEOUT,
+        )
+        ensure_esp_ok(response, "Set SSID")
+
+        print("→ Setting STA password")
+        pass_param = password if password else "NOPASSWORD"
+        response, _ = usb_esp_command(
+            ser,
+            usb_esp_command_text("101", pass_param,
+                                 admin_password=args.admin_password),
+            "101",
+            timeout=USB_ESP_DEFAULT_TIMEOUT,
+        )
+        ensure_esp_ok(response, "Set password")
+
+        if args.no_restart:
+            print("✓ WiFi settings saved. Restart skipped.")
+            return
+
+        print("→ Restarting ESP3D")
+        response, _ = usb_esp_command(
+            ser,
+            usb_esp_command_text("444", "RESTART",
+                                 admin_password=args.admin_password),
+            "444",
+            timeout=USB_ESP_DEFAULT_TIMEOUT,
+        )
+        ensure_esp_ok(response, "ESP3D restart")
+
+        if args.no_wait:
+            print("✓ ESP3D restart requested.")
+            return
+
+        time.sleep(5.0)
+        status = wait_for_wifi_connection(
+            ser, ssid, args.connect_timeout,
+            admin_password=args.admin_password,
+        )
+
+    if status.get("SSID") == ssid and status.get("ip") not in ("", "0.0.0.0"):
+        print("✓ ESP3D connected:")
+    else:
+        print("  ESP3D did not report a completed STA connection before timeout.")
+    print_wifi_status_from_map(status)
+
+
 def main_esp3d(argv=None):
     ap = argparse.ArgumentParser(
         prog=f"{pathlib.Path(sys.argv[0]).name} esp3d",
@@ -636,6 +998,10 @@ def main():
     argv = sys.argv[1:]
     if argv and argv[0] in ("esp3d", "esp"):
         main_esp3d(argv[1:])
+    elif argv and argv[0] in ("wifi-setup", "wifi"):
+        main_wifi_setup(argv[1:])
+    elif argv and argv[0] in ("wifi-status", "wifi-info"):
+        main_wifi_status(argv[1:])
     elif argv and argv[0] == "stm32":
         main_stm32(argv[1:])
     else:

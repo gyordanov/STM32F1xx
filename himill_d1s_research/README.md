@@ -292,9 +292,11 @@ When resuming this work:
 3. Run `pio run -e himill_d1s` to confirm a clean build
 4. Use `tools/himill_flash.py .pio/build/himill_d1s/firmware.bin` for normal
    USB bootloader flashing via `[BOOT]`
-5. If using ST-LINK instead, use
+5. Use `tools/himill_flash.py wifi-setup` to scan/select WiFi over USB, and
+   `tools/himill_flash.py wifi-status` to print current ESP3D SSID/IP
+6. If using ST-LINK instead, use
    `st-flash --freq=100 --reset write .pio/build/himill_d1s/firmware.bin 0x08008000`
    (the slow speed avoids the loader bug)
-6. Check `EGSender/docs/controllers/himill_d1s.md` for sender-side context
-7. Memory file `project_d1s_firmware_flash.md` (auto-memory) has the
+7. Check `EGSender/docs/controllers/himill_d1s.md` for sender-side context
+8. Memory file `project_d1s_firmware_flash.md` (auto-memory) has the
    session-to-session pointers

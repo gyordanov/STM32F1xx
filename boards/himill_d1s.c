@@ -545,7 +545,7 @@ static inline void laser_pwm_mirror (void)
 // `[ESP420] json` is also useful — returns ESP3D's full system info
 // JSON which includes the device's IP / WiFi state.
 // (esp_tunnel_until_ms is declared up at file scope so mux_read can see it.)
-#define ESP_TUNNEL_WINDOW_MS 3000
+#define ESP_TUNNEL_WINDOW_MS 20000
 
 static void himill_poll_buttons (sys_state_t state)
 {
