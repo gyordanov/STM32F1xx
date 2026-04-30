@@ -59,6 +59,100 @@ static on_report_options_ptr   on_report_options;
 static on_execute_realtime_ptr on_execute_realtime;
 static on_stream_changed_ptr   on_stream_changed;
 
+// Pendant traffic rate-limits. Without these the SmartPendant overwhelms
+// F103RC's main loop and produces self-sustained MPG toggle oscillation
+// (~200 enable/disable cycles per second observed; see /tmp/mpg3.txt
+// analysis 2026-04-30).
+//
+// HIMILL_MPG_POLL_MIN_MS — minimum gap between forwarded `?` status polls.
+// 100 ms = 10 Hz pendant display refresh, plenty smooth.
+//
+// HIMILL_MPG_TOGGLE_DEBOUNCE_MS — minimum gap between forwarded 0x8B
+// (CMD_MPG_MODE_TOGGLE) bytes. The SmartPendant sends 0x8B at high rate
+// (heartbeat + button-held auto-repeat). With grblHAL's split-handler
+// design (stream layer enables on 0x8B, protocol layer disables on 0x8B
+// when in MPG mode), each 0x8B byte toggles state — so a pendant
+// streaming 0x8B at 100 Hz creates a 100 Hz MPG toggle loop. Debouncing
+// to 500 ms collapses heartbeat traffic to a single event while still
+// letting an intentional button press (~1 Hz) through.
+#define HIMILL_MPG_POLL_MIN_MS         100
+#define HIMILL_MPG_TOGGLE_DEBOUNCE_MS  500
+static volatile uint32_t mpg_last_poll_ticks = 0;
+static volatile uint32_t mpg_last_toggle_ticks = 0;
+
+static const io_stream_t *mpg_uart_stream = NULL;
+
+// Intercepts 0x8B before it can reach protocol_enqueue_realtime_command.
+// Installed as mux_rt_handler in board_init. mux_rt_handler is the function
+// used by:
+//   1) mux_enqueue_rt_from for USB / UART2 byte streams (every realtime
+//      byte from those streams routes through it)
+//   2) UART4 (the MPG stream) AFTER stream_mpg_enable swaps UART4's
+//      rx_handler to mux_rt_handler at grbl/stream.c:705
+// So this wrapper sees every 0x8B from every stream regardless of MPG
+// state. Debouncing here closes the race window where pendant heartbeat
+// bytes slip through during the brief moment between stream_mpg_enable's
+// handler swap and our re-install via on_execute_realtime — which was the
+// remaining ~5 ms toggle source observed in /tmp/mpg4.txt (32 toggles in a
+// 2-second window even WITH himill_mpg_rx_filter's debounce active).
+static bool himill_intercept_rt (uint8_t c)
+{
+    if (c == CMD_MPG_MODE_TOGGLE) {
+        uint32_t now = hal.get_elapsed_ticks ? hal.get_elapsed_ticks() : 0;
+        if ((now - mpg_last_toggle_ticks) < HIMILL_MPG_TOGGLE_DEBOUNCE_MS)
+            return true; // drop heartbeat / button auto-repeat
+        mpg_last_toggle_ticks = now;
+    }
+    return protocol_enqueue_realtime_command(c);
+}
+
+// UART4 rx_handler that stays installed in BOTH MPG-OFF and MPG-ON state
+// (re-installed by himill_poll_buttons after every transition).
+//
+// MPG OFF:
+//   - 0x8B → forward to stream_mpg_check_enable (engage MPG), debounced
+//   - status-report bytes → forward, rate-limited to HIMILL_MPG_POLL_MIN_MS
+//   - other → forward to stream_mpg_check_enable (default branch goes
+//     to protocol_enqueue_realtime_command — safe since pendant is
+//     electrically driving the line, no floating-pin noise)
+//
+// MPG ON:
+//   - 0x8B → debounced; only forward to protocol (release MPG) once per
+//     HIMILL_MPG_TOGGLE_DEBOUNCE_MS window
+//   - everything else → forward to protocol_enqueue_realtime_command,
+//     letting jog commands ($J=...) drop into the UART4 RX buffer where
+//     the parser reads them via hal.stream.read = mpg.stream.read
+static bool himill_mpg_rx_filter (uint8_t c)
+{
+    uint32_t now = hal.get_elapsed_ticks ? hal.get_elapsed_ticks() : 0;
+
+    if (c == CMD_MPG_MODE_TOGGLE) {
+        if ((now - mpg_last_toggle_ticks) < HIMILL_MPG_TOGGLE_DEBOUNCE_MS)
+            return true; // drop heartbeat / button auto-repeat
+        mpg_last_toggle_ticks = now;
+    }
+
+    if (sys.mpg_mode) {
+        // MPG ACTIVE: route everything (including pendant `?`, jog $J=,
+        // and the now-debounced 0x8B) through the standard protocol path.
+        return protocol_enqueue_realtime_command(c);
+    }
+
+    switch (c) {
+        case CMD_STATUS_REPORT:
+        case CMD_STATUS_REPORT_LEGACY:
+        case CMD_STATUS_REPORT_ALL:
+        case CMD_GCODE_REPORT:
+            if ((now - mpg_last_poll_ticks) < HIMILL_MPG_POLL_MIN_MS)
+                return true; // drop excess polls
+            mpg_last_poll_ticks = now;
+            break;
+        default:
+            break;
+    }
+    return stream_mpg_check_enable(c);
+}
+
 // USB-CDC ↔ UART2 stream switcher — wrapper version (DTR-driven).
 //
 // MaxMake (2026-04-25) confirmed grblHAL is single-stream and they
@@ -169,11 +263,26 @@ static bool mux_enqueue_rt_from (const io_stream_t *source, uint8_t c)
 
 static bool mux_usb_enqueue_rt (uint8_t c)
 {
+    // 0x8B (CMD_MPG_MODE_TOGGLE) is exclusive to the pendant on UART4.
+    // ESP3D forwards traffic from the host (USB or telnet/WS) — if any
+    // of that contains 0x8B (e.g. binary data, telnet negotiation bytes,
+    // ESP3D framing) it would hit protocol.c:931 and disable MPG while
+    // the pendant is still engaged → toggle loop. Pendant 0x8B comes in
+    // on UART4 and is unaffected by this filter.
+    if (c == CMD_MPG_MODE_TOGGLE)
+        return true;
     return mux_enqueue_rt_from(mux_usb, c);
 }
 
 static bool mux_uart_enqueue_rt (uint8_t c)
 {
+    // See mux_usb_enqueue_rt for rationale. Critical here too: this is the
+    // ESP3D-bridged path, and ESP3D was confirmed to be emitting 0x8B
+    // bytes that triggered the MPG-toggle loop (mpg_good.txt isolation
+    // log vs mpg2.txt mux-mode log: same firmware, same pendant; only
+    // difference was whether USART2's ISR was active).
+    if (c == CMD_MPG_MODE_TOGGLE)
+        return true;
     return mux_enqueue_rt_from(mux_uart, c);
 }
 
@@ -294,6 +403,18 @@ static void mux_write_all (const char *str)
 
     if (mux_stream_connected(mux_usb) && mux_usb != mux_uart && mux_usb->write)
         mux_usb->write(str);
+
+    // When MPG is engaged, the pendant requests status with `?`. That hits
+    // protocol_enqueue_realtime_command, which schedules a "regular" report
+    // routed through hal.stream.write_all (= this function). In standard
+    // grblHAL stream_write_all iterates the connection list — which includes
+    // the MPG stream — so the pendant gets the report on UART4. mux_write_all
+    // doesn't iterate that list, so without this branch the pendant never
+    // sees `MPG:1`, decides MPG didn't engage, and re-sends 0x8B. After our
+    // 500 ms debounce window the next 0x8B passes through and toggles MPG
+    // off → ~0.5 Hz toggle loop (the alternating MPG:1/MPG:0 in /tmp/mpg6.txt).
+    if (sys.mpg_mode && mpg_uart_stream && mpg_uart_stream->write)
+        mpg_uart_stream->write(str);
 }
 
 static uint16_t mux_get_rx_buffer_count (void)
@@ -549,6 +670,18 @@ static inline void laser_pwm_mirror (void)
 
 static void himill_poll_buttons (sys_state_t state)
 {
+#if MPG_ENABLE == 2 && !defined(HIMILL_SKIP_MUX)
+    // Re-install our filter as UART4's rx_handler. stream_mpg_enable swaps
+    // it for protocol_enqueue_realtime_command on every transition (grbl/
+    // stream.c:705 and :723 alternately install protocol-handler when MPG
+    // engages and our filter when MPG disengages). Without this re-install,
+    // 0x8B bytes from the pendant during MPG-ON state hit protocol_enqueue
+    // _realtime_command directly → protocol.c:931 disables MPG → next 0x8B
+    // re-enables → ~200 Hz toggle loop. Idempotent and cheap.
+    if (mpg_uart_stream && mpg_uart_stream->set_enqueue_rt_handler)
+        mpg_uart_stream->set_enqueue_rt_handler(himill_mpg_rx_filter);
+#endif
+
     // PC4 = front-panel + inside-door buttons (parallel-wired, active-low).
     // PB1 = door switch.
     //
@@ -920,6 +1053,7 @@ void board_init (void)
     // board_init (which runs AFTER stream_connect(usbInit())) so we
     // know USB CDC is up; if claim fails, leave hal.stream untouched
     // and we fall back to USB-only behaviour.
+#ifndef HIMILL_SKIP_MUX
     mux_usb = stream_get_base();
     if (mux_usb) {
         stream_enumerate_streams(mux_find_uart, NULL);
@@ -961,6 +1095,29 @@ void board_init (void)
             mux_initialized = true;
         }
     }
+#endif // !HIMILL_SKIP_MUX
+
+    // MPG init runs whether or not the mux is installed. In mux mode, we
+    // pre-register MPG to undo the hal.stream.write_all clobber from
+    // stream_mpg_register. In isolation mode (HIMILL_SKIP_MUX), MPG runs
+    // on top of stock grblHAL streams (USB CDC primary, UART4 secondary)
+    // — useful to bisect whether the himill mux is contributing to the
+    // SmartPendant MPG-toggle bug observed on D1S vs flexihal F4.
+#if MPG_ENABLE == 2
+    mpg_uart_stream = stream_open_instance(MPG_STREAM, 115200, NULL, NULL);
+    hal.driver_cap.mpg_mode = stream_mpg_register(
+        mpg_uart_stream, false, himill_mpg_rx_filter);
+    if (hal.driver_cap.mpg_mode && mux_initialized)
+        hal.stream.write_all = mux_write_all;
+    // Install 0x8B debounce as mux_rt_handler. Only meaningful when the
+    // mux's enqueue-rt wrappers are wired up (i.e. mux mode). In isolation
+    // mode this static is set but unused — UART4-during-MPG-active will
+    // route 0x8B through whatever stream_mpg_enable's swap installs.
+    if (hal.driver_cap.mpg_mode && mux_initialized) {
+        mux_rt_handler = himill_intercept_rt;
+        mux_rt_owner_locked = false;
+    }
+#endif
 }
 
 #endif // BOARD_HIMILL_D1S
