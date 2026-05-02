@@ -897,7 +897,8 @@ static void himill_stream_changed (stream_type_t type)
 // toolchange (no TLR captured yet ⇒ haven't cut anything ⇒ nothing to
 // clean). Default Off — only enable if the tester actually needs it.
 //
-// Coords are read live from G59.3 (seeded by share/d1s/d1_factory.nc).
+// Coords are read live from G59.3, which is seeded to D1S factory
+// defaults at boot/$RST by seed_himill_coord_defaults() below.
 // RPM/dwell/lift are compile-time constants today; promote to settings
 // later if testers report different needs.
 
@@ -933,16 +934,66 @@ static const setting_detail_t himill_setting_detail[] = {
     { Setting_UserDefined_0, Group_UserSettings, "Clean toolsetter before M6", NULL, Format_Bool, NULL, NULL, NULL, Setting_NonCoreFn, himill_set_clean, himill_get_clean, NULL }
 };
 
+// Seed G30 (tool-change parking position) and G59.3 (toolsetter location)
+// to D1S factory defaults if either is uninitialized (all axes == 0).
+//
+// Why: G30 and G59.3 live in the parameter NVS block (`$#` output), not
+// the settings block (`$$` output). They survive `$RST=$` but get wiped
+// by `$RST=#`, `$RST=*`, and a fresh flash. The standard "save your
+// settings" workflow grblHAL users follow doesn't capture them, so a
+// re-flash or factory reset leaves a new D1S without the toolsetter
+// position the rest of the M6 / probe pipeline expects to find.
+//
+// Called from both himill_settings_load (every boot — re-seeds after
+// `$RST=#` once user reboots) and himill_settings_restore (fires on
+// `$RST=*` / `$RST=&` and on first-boot version mismatch via the
+// settings_restore(settings_all) path in settings.c:3476). Idempotent:
+// only writes if values are zero, so calling it twice on first boot
+// (once from restore, once from load) is fine.
+//
+// Edge case: a user who legitimately wants G30 or G59.3 at exactly
+// (0,0,0) will get re-seeded on next boot. Acceptable trade-off — for
+// the D1S geometry, both positions are non-zero by design.
+static void seed_himill_coord_defaults (void)
+{
+    coord_system_data_t data;
+
+    // G59.3 = (0, -7, -15) — toolsetter location in machine coords.
+    // Validated 2026-05-01.
+    if (settings_read_coord_data(CoordinateSystem_G59_3, &data)) {
+        if (data.coord.x == 0.0f && data.coord.y == 0.0f && data.coord.z == 0.0f) {
+            memset(&data, 0, sizeof(data));
+            data.coord.x = 0.0f;
+            data.coord.y = -7.0f;
+            data.coord.z = -15.0f;
+            settings_write_coord_data(CoordinateSystem_G59_3, &data);
+        }
+    }
+
+    // G30 = (30, -7, 0) — tool-change parking position in machine coords.
+    if (settings_read_coord_data(CoordinateSystem_G30, &data)) {
+        if (data.coord.x == 0.0f && data.coord.y == 0.0f && data.coord.z == 0.0f) {
+            memset(&data, 0, sizeof(data));
+            data.coord.x = 30.0f;
+            data.coord.y = -7.0f;
+            data.coord.z = 0.0f;
+            settings_write_coord_data(CoordinateSystem_G30, &data);
+        }
+    }
+}
+
 static void himill_settings_restore (void)
 {
     himill_settings.enable = false;
     hal.nvs.memcpy_to_nvs(himill_nvs_address, (uint8_t *)&himill_settings, sizeof(himill_settings_t), true);
+    seed_himill_coord_defaults();
 }
 
 static void himill_settings_load (void)
 {
     if (hal.nvs.memcpy_from_nvs((uint8_t *)&himill_settings, himill_nvs_address, sizeof(himill_settings_t), true) != NVS_TransferResult_OK)
         himill_settings_restore();
+    seed_himill_coord_defaults();
 }
 
 static setting_details_t himill_setting_details = {
