@@ -29,6 +29,10 @@ starting point for any future debugging session.
   - `platformio.ini`
 - `our_findings/` — write-ups generated during this work
 - `disassembly/` — staging area for Ghidra projects, additional notes
+- `grblhal_setting_descriptions.json` — exported `setting_descr_t`
+  defaults for sender-side fallback when firmware is built with
+  `NO_SETTINGS_DESCRIPTIONS`; keeps preprocessor-gated variants and
+  `appliesTo` hints for normalized axis / repeated settings.
 
 ## What works (current build state, 2026-05-03)
 
@@ -262,7 +266,10 @@ Current `[env:himill_d1s]` flags worth knowing:
 | `MACROS_ENABLE` | 1 | Macros plugin (button-action mappings) |
 | `ROTATION_ENABLE` | 1 | A axis as rotary |
 | `MINIMIZE_PROBE_OVERSHOOT` | 1 | Probe accuracy |
+| `NO_SETTINGS_DESCRIPTIONS` | 1 | Strip long core setting descriptions from `$ESH` / per-setting help |
+| `NGC_EXPRESSIONS_ENABLE` | 1 | Enable NGC parameter expressions for probing macros |
 | `SDCARD_ENABLE` | 1 | $F, $FM |
+| `RGB_LED_ENABLE` | 2 | WS2812 state LEDs plus M150 plugin |
 | `VECT_TAB_OFFSET` | 0x8000 | Match HiMill bootloader's app entry |
 | `SERIAL1_PORT` | 4 | UART4 on PC10/PC11 (GX12-4P rear connector → SmartPendant) |
 | `MPG_ENABLE` | 2 | Software MPG toggle (no MPG_MODE_PIN) |
@@ -350,10 +357,9 @@ Decided / done since previous notes:
 
 Still on the list:
 
-1. **WS2812 LEDs** — PB5 ring + PB15 indicator. Flash budget is fine
-   (~45 KB headroom currently); blocker is bit-bang timing under our IRQ
-   load. Re-try via SPI1_MOSI on PB5 hardware — sidesteps the timing
-   issue. User has stated low priority ("don't care enough" 2026-04-30).
+1. **WS2812 toolchange indicator hardware validation** — RGB state
+   output and M150 are compiled in; still test the internal LED path
+   during an actual toolchange wait-for-cycle-resume sequence.
 2. **`himill` utility script** consolidation — currently
    `himill_flash.py` only flashes. Add: `wifi`, `scan`, `status`, `ip`,
    optional static IP. Tracked as #79–#83/#85. Wifi setup partially
@@ -381,33 +387,48 @@ Still on the list:
 
 ## Build constraints / flash budget
 
-Current known-good usage on `[env:himill_d1s]` with RGB LEDs enabled:
+Current known-good usage on `[env:himill_d1s]` with RGB LEDs, macros, and
+NGC expressions enabled, with long core setting descriptions stripped:
 
 ```
-RAM:   60.8% (29 876 / 49 152 bytes)
-Flash: 83.7% (219 492 / 262 144 bytes)
+RAM:   62.5% (30 716 / 49 152 bytes)
+Flash: 85.2% (223 220 / 262 144 bytes)
 ```
 
 Actual D1S app flash budget is 225,280 bytes because the linker reserves
-the HiMill app offset plus EEPROM emulation. The current non-expression
-`firmware.bin` is 219,988 bytes, leaving about 5.2 KB of real flash
-headroom.
+the HiMill app offset plus EEPROM emulation. The current expression-enabled
+`firmware.bin` is 223,716 bytes, leaving 1,564 bytes of real flash headroom.
 
-### NGC_EXPRESSIONS_ENABLE — LTO attempt unsafe
+### NGC_EXPRESSIONS_ENABLE — fits with setting descriptions stripped
 
 The grblHAL feature flag `NGC_EXPRESSIONS_ENABLE` (parameter expressions
-like `#1 = 5`, `[#1 + 2]`, branching, looping in gcode) still does not
-fit safely with the current D1S firmware.
+like `#1 = 5` and `[#1 + 2]`) now fits without disabling RGB, macros,
+MPG, SD card, rotation, or the 4 KB EEPROM/NVS reserve.
 
-Tested 2026-05-03:
+Final tested build, 2026-05-03:
 
-- Plain `-D NGC_EXPRESSIONS_ENABLE=On` still fails at link:
-  `.rodata` overflows the real `FLASH` region by 5,964 bytes.
-- The real app flash budget is 225,280 bytes, not PlatformIO's displayed
-  262,144 bytes: `256K - 4K EEPROM_EMUL - 0x8000 bootloader/app offset`.
-- Adding `-flto` lets GCC do whole-program optimization and the build
-  fits with the stock HiMill app offset preserved, but the resulting image
-  is unsafe on hardware.
+- `NO_SETTINGS_DESCRIPTIONS=1` wraps the large core `setting_descr[]`
+  table in `grbl/settings.c` and registers no core description table.
+- `$ES` / `$ESH` still enumerate IDs, names, groups, units, types,
+  formats, bounds, reboot flags, and values. The long description field
+  is blank for core settings.
+- Per-setting help (`$$=<n>` / `$SED=<n>`) loses the long explanatory
+  paragraph for core settings. Sender-side fallback text is the right
+  place for this.
+- No LTO is used.
+- Size: `text=219364`, `data=4348`, `bss=35592`,
+  `firmware.bin=223716`.
+- Real app budget: `0x37000` / 225,280 bytes, so slack is 1,564 bytes.
+- IRQ sanity check passed: `USB_LP_CAN1_RX0_IRQHandler`,
+  `SysTick_Handler`, `TIM2_IRQHandler`, `USART2_IRQHandler`, and
+  `UART4_IRQHandler` all resolve to real handlers, not `Default_Handler`.
+
+Rejected / cautionary build paths:
+
+- Plain `NGC_EXPRESSIONS_ENABLE` without stripping setting descriptions
+  failed at link in scratch builds.
+- Adding `-flto` made earlier NGC builds fit, but the resulting image was
+  unsafe on hardware.
 - LTO exposes a duplicate `_exit` between `Src/syscalls.c` and
   `libnosys.a`; making the local `_exit` shim weak resolves that without
   using `--allow-multiple-definition`.
@@ -418,9 +439,10 @@ Tested 2026-05-03:
   `USB_LP_CAN1_RX0_IRQHandler`, `SysTick_Handler`, `TIM2_IRQHandler`,
   `USART2_IRQHandler`, and `UART4_IRQHandler` resolved to the startup
   file's weak `Default_Handler` instead of the real C handlers.
-
-Do not flash the expression-enabled LTO build until the ISR/LTO issue is
-fixed and the final ELF is verified with `arm-none-eabi-nm` before flashing.
+- A follow-up scratch build used D1S-only non-LTO IRQ wrappers so those
+  vector names resolved to real handlers. Once the real handlers were
+  retained, the all-features image no longer fit: linker overflow was
+  2,580 bytes.
 
 ### General flash discipline
 
