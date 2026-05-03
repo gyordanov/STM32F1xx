@@ -1,7 +1,7 @@
 # HiMill D1S grblHAL Research
 
 This folder collects everything learned during the bring-up of grblHAL on
-the HiMill D1S CNC controller (2026-04-24 → 2026-04-25). Use it as the
+the HiMill D1S CNC controller (2026-04-24 → 2026-05-03). Use it as the
 starting point for any future debugging session.
 
 ## Hardware in scope
@@ -30,11 +30,11 @@ starting point for any future debugging session.
 - `our_findings/` — write-ups generated during this work
 - `disassembly/` — staging area for Ghidra projects, additional notes
 
-## What works (current build state, 2026-04-25)
+## What works (current build state, 2026-05-03)
 
 These all work cleanly on our grblHAL build:
 
-- Motion: X/Y up to 2000 mm/min, Z 1500 mm/min (TMCs forced to fast mode at boot via PD2)
+- Motion: X/Y up to 2000 mm/min, Z 1500 mm/min (default $451=1 = SpreadCycle)
 - Homing: X/Y/Z with `$23=1` + `$3=2` (Y motor reversed in stock D1S wiring; bake both)
 - Limits: X/Y/Z hard limits via PC0/PC1/PC2 EXTI
 - Probe + toolsetter: PA1 = toolsetter, PB2 = 3D probe (`G65P5Q1` / `Q0` selects)
@@ -58,6 +58,40 @@ These all work cleanly on our grblHAL build:
   session — no TLR yet ⇒ nothing has been cut yet ⇒ no chips). Default
   Off. Use case: aluminum chips covering the toolsetter; spindle
   airflow blows them off.
+- **SmartPendant on UART4 / GX12-4P rear connector** (added 2026-04-30):
+  `SERIAL1_PORT=4` + `MPG_ENABLE=2` + `MPG_STREAM=1`. Pendant button
+  sends `0x8B` to engage MPG mode; wheel produces `$J=` jogs; pendant
+  LCD shows axes/coords. Internal pull-up on PC11 (UART4 RX) is
+  required so the pin idles HIGH when nothing is plugged in (`Src/
+  serial.c:828-833`). 500 ms `0x8B` debounce in `himill_intercept_rt`
+  + `himill_mpg_rx_filter` to swallow pendant heartbeat retries.
+  **Critical fix**: `mux_write_all` MUST broadcast to the MPG stream
+  while `sys.mpg_mode` is true — otherwise the pendant never sees
+  `|MPG:1` in status replies, retries `0x8B`, and toggle-loops at
+  ~0.5 Hz. See `bug_ws_dollar_doubling.md` and
+  `session_2026-04-30_pendant.md` for the diagnosis chain.
+- **Per-UART TX buffer sizing** (added 2026-04-30): the stock driver uses
+  one global `TX_BUFFER_SIZE` for every UART. Two 8 KB buffers (UART2
+  + UART4) blew through the F103RC's 48 KB SRAM and caused $-dump
+  truncation + hard crashes. Introduced `TX_BUFFER1_SIZE=1024` for
+  UART4 (`Src/serial.c`).
+- **Factory-default NVS seeding** (added 2026-05-02): `seed_himill_
+  coord_defaults()` writes `G30=(30,-7,0)` and `G59.3=(0,-7,-15)` if
+  either is at zeros. Called from both `himill_settings_load` (every
+  boot — handles fresh flash + post-`$RST=#` reboot) and
+  `himill_settings_restore` (`$RST=*` / `$RST=&` / first-boot
+  version-mismatch path). Idempotent.
+- **`$342=65` baked default** (added 2026-05-02): tool-change probing
+  distance increased from grblHAL's stock 30 mm to 65 mm to span the
+  search range needed with `G59.3.Z=-15`.
+- **`$451` user-settable TMC chopper mode** (added 2026-05-03):
+  `Setting_UserDefined_1`, `Format_RadioButtons` "StealthChop,
+  SpreadCycle". Default 1 (SpreadCycle). Drives PD2 (TMC STEPPER_MODE)
+  in `apply_stepper_mode()`. **Empirical: StealthChop hits a back-EMF
+  wall at ~1000 mm/min on D1S** — drops steps above that. SpreadCycle
+  sustains the configured 2000 mm/min ceiling. No hybrid mode (TMC's
+  `TPWMTHRS` register) available — D1S TMCs are standalone, no UART
+  to chip. Manual mode-flip is the only knob.
 
 ## Open issues / unknowns
 
@@ -182,6 +216,36 @@ The DTR-driven mux switching is now working well enough for normal use:
 - the remaining rough edges are telnet-specific, not a general "USB CDC on
   breaks networking" failure anymore
 
+### 6. StealthChop velocity ceiling on D1S
+
+User-empirical (2026-05-03): `$451=0` (StealthChop) starts dropping
+steps above ~1000 mm/min. `$451=1` (SpreadCycle) sustains the
+configured 2000 mm/min on $110/$111. Cause: TMC StealthChop's
+PWM tuning loop hits a back-EMF wall at the D1S supply voltage (24 V?)
++ the specific motors. On boards with UART/SPI to the TMC, the
+`TPWMTHRS` register switches StealthChop → SpreadCycle automatically
+above a programmed velocity — but D1S TMCs are standalone, that
+register is unreachable. So StealthChop is a **manual mode for slow
+operations only** (probing, drag-knife, quiet jogging). Default stays
+SpreadCycle.
+
+MaxMake's stock firmware uses StealthChop for milling and SpreadCycle
+for laser — likely paired with a lower max-feed config in milling
+mode. Our `$110/$111=2000` config + StealthChop combination is what
+exposes the ceiling.
+
+### 7. Bootloader handshake variant
+
+A second tester's D1S bootloader replied `a1 02 01` to our `51 05 0a`
+handshake (`tools/himill_flash.py:86`) instead of the
+reverse-engineered `a1 04 01`. Framing matched (same `a1` opcode +
+`01` trailer), only the middle byte differed (`02` vs `04`).
+Hypothesis: middle byte is a hardware/bootloader variant identifier.
+Awaiting HiMill clarification on what the byte represents and whether
+the chunk-upload protocol is identical across variants. If yes, plan
+is to add `--allow-variant` flag to the flasher that warns instead of
+erroring. 2026-05-01.
+
 ## Build flags reference
 
 Current `[env:himill_d1s]` flags worth knowing:
@@ -200,6 +264,9 @@ Current `[env:himill_d1s]` flags worth knowing:
 | `MINIMIZE_PROBE_OVERSHOOT` | 1 | Probe accuracy |
 | `SDCARD_ENABLE` | 1 | $F, $FM |
 | `VECT_TAB_OFFSET` | 0x8000 | Match HiMill bootloader's app entry |
+| `SERIAL1_PORT` | 4 | UART4 on PC10/PC11 (GX12-4P rear connector → SmartPendant) |
+| `MPG_ENABLE` | 2 | Software MPG toggle (no MPG_MODE_PIN) |
+| `MPG_STREAM` | 1 | Pendant stream = UART4 (instance 1; UART2 is instance 0) |
 
 ## Settings baked as `-D DEFAULT_*` flags
 
@@ -212,6 +279,8 @@ All in `[env:himill_d1s].build_flags`:
 - $24=25 (homing slow feed), $27=1.0 (pulloff)
 - $30=13000, $33=10000, $36=99 (spindle envelope)
 - $40=1 (jog soft limit), $341=3 (auto-touchoff M6 toolchange)
+- $342=65 (toolchange probing distance; stock grblHAL was 30 — needed
+  larger range with G59.3.Z=-15)
 - $346 bit1+bit2 (toolchange at G30, fast probe pulloff)
 - $394=1.0, $539=1.0 (spindle ramp times)
 - $100-103=1600/1600/1600/88.889 (steps/mm)
@@ -225,11 +294,22 @@ All in `[env:himill_d1s].build_flags`:
 - `boards/himill_d1s.c` — board init, [BOOT]/[DFU]/[ESP*]/[LASER_MODE]
   user commands, realtime hook for button polling, full USB-CDC ↔ UART2
   stream mux (covers all 15 io_stream_t methods incl. `cancel_read_buffer`
-  for jog-cancel), fast-mode-always PD2 drive, pause-on-SD-job, optional
-  toolsetter cleanup hook ($450) on `grbl.on_tool_selected`
+  for jog-cancel), pause-on-SD-job, optional toolsetter cleanup hook
+  ($450) on `grbl.on_tool_selected`. **Added 2026-04-30 → 2026-05-03:**
+  SmartPendant integration (`himill_mpg_rx_filter`,
+  `himill_intercept_rt`, `0x8B` debounce, MPG fan-out in
+  `mux_write_all`), factory NVS seeding for G30/G59.3
+  (`seed_himill_coord_defaults`), user-settable TMC chopper mode (`$451`
+  via `apply_stepper_mode` + `Setting_UserDefined_1`).
 - `Inc/driver.h` — added PB8 TIM4_CH3 to spindle PWM resolver, added
   BOARD_HIMILL_D1S include
 - `Src/driver.c` — added `#ifdef COOLANT_FLOOD_PIN` guard
+- `Src/serial.c` — **(added 2026-04-30)** per-UART TX buffer typedef
+  with `TX_BUFFER1_SIZE=1024` for UART4 (single global TX_BUFFER_SIZE
+  doesn't fit two 8 KB buffers in F103RC's 48 KB SRAM). `GPIO_PULLUP`
+  on UART1/UART4 RX (PC11) — without it, MPG_ENABLE=2 routes
+  floating-pin noise into `protocol_enqueue_realtime_command` and
+  random feed-holds / resets fire.
 - `platformio.ini` — added [env:himill_d1s] env with all the above flags
 
 ## EGSender side
@@ -260,35 +340,114 @@ Decided / done since previous notes:
 - Stream mux completeness — fixed (jog cancel, $esh long output).
 - Toolsetter chip-cleanup — `$450=1` opt-in hook landed.
 - Y axis direction — `$3=2` + `$23=1` bake mirrors stock D1S.
+- **First-boot preset** — done in firmware via `seed_himill_coord_
+  defaults()` (NVS seed, no SD macro). Covers fresh flash, `$RST=*`,
+  `$RST=&`, and `$RST=#` (re-seeds on next boot). 2026-05-02.
+- **SmartPendant via UART4 GX12-4P** — bring-up complete, see "What
+  works" entry. 2026-04-30.
+- **`$342=65` baked default** — 2026-05-02.
+- **TMC chopper user setting (`$451`)** — 2026-05-03.
 
 Still on the list:
 
-1. **First-boot preset** — share/d1s/d1_factory.nc seeds G30 + G59.3
-   per-machine. Once we see variance across 3+ testers, decide whether
-   to keep the SD-card macro or move to firmware NVS seeding (#88).
-2. **WS2812 LEDs** — PB5 ring + PB15 indicator. Flash budget is fine
-   (~48 KB headroom); blocker is bit-bang timing under our IRQ load.
-   Re-try via SPI1_MOSI on PB5 hardware — sidesteps the timing issue.
-3. **`himill` utility script** consolidation — currently
+1. **WS2812 LEDs** — PB5 ring + PB15 indicator. Flash budget is fine
+   (~45 KB headroom currently); blocker is bit-bang timing under our IRQ
+   load. Re-try via SPI1_MOSI on PB5 hardware — sidesteps the timing
+   issue. User has stated low priority ("don't care enough" 2026-04-30).
+2. **`himill` utility script** consolidation — currently
    `himill_flash.py` only flashes. Add: `wifi`, `scan`, `status`, `ip`,
-   optional static IP. Tracked as #79–#83/#85.
-4. **`[ESP*]` tunnel close** — append newline so subsequent terminal
+   optional static IP. Tracked as #79–#83/#85. Wifi setup partially
+   landed (commit `ae53d0b`, "wifi scan and setup").
+3. **`[ESP*]` tunnel close** — append newline so subsequent terminal
    prompts render cleanly (#86).
-5. **Bootloader handshake race** — occasional flaky [BOOT] response
+4. **Bootloader handshake race** — occasional flaky [BOOT] response
    needs port-reopen retry on the host side (#85).
-6. **Per-tester `tc.macro`** if testers want full M6 replacement
-   (alternative to the on_tool_selected hook). NGC_EXPRESSIONS is the
-   only blocker — costs ~2.5 KB flash, fits only by giving up
-   ROTATION_ENABLE or going COMPATIBILITY_LEVEL=2. Stay at the hook for
-   now.
+5. **Bootloader handshake variant** — second tester's D1S bootloader
+   replied `a1 02 01` to our `51 05 0a` handshake instead of the
+   reverse-engineered `a1 04 01`. Framing matches (same `a1` opcode +
+   `01` trailer) — middle byte is plausibly a hardware/bootloader
+   variant identifier. Awaiting HiMill clarification on what the byte
+   represents and whether the chunk-upload protocol is identical
+   across variants. 2026-05-01. If protocol is the same, plan is to
+   add `--allow-variant` flag to `himill_flash.py` that warns instead
+   of erroring on the byte mismatch. See `tools/himill_flash.py:86`.
+6. **Door safety** — PB1 door switch is currently dispatched as
+   `safety_door_ajar` through `hal.control.interrupt_callback` from
+   the polled-button hook (`himill_poll_buttons`) but full safety-
+   door modal integration not wired. User has stated low priority
+   ("don't care enough" 2026-04-30).
+7. **Per-tester `tc.macro`** if testers want full M6 replacement
+   (alternative to the on_tool_selected hook).
+
+## Build constraints / flash budget
+
+Current usage on `[env:himill_d1s]`:
+
+```
+RAM:   60.5% (29 748 / 49 152 bytes)
+Flash: 82.8% (217 068 / 262 144 bytes)
+```
+
+≈ 45 KB flash + 19 KB RAM headroom remain.
+
+### NGC_EXPRESSIONS_ENABLE — does NOT fit
+
+The grblHAL feature flag `NGC_EXPRESSIONS_ENABLE` (parameter expressions
+like `#1 = 5`, `[#1 + 2]`, branching, looping in gcode) **costs ~2.5 KB
+flash** and **does not fit on this board** without trade-offs. Tested
+2026-04-25; result hasn't changed despite recent feature additions.
+
+To enable it you must give up something:
+
+- Drop `ROTATION_ENABLE` (saves ~2 KB) — but the user has the A axis as
+  rotary and uses it.
+- Drop `COMPATIBILITY_LEVEL=1` and accept `COMPATIBILITY_LEVEL=2` (saves
+  ~3 KB) — strips fields from `?`-status that some senders depend on.
+- Drop `MACROS_ENABLE` (saves ~2 KB) — would lose the button-action
+  plugin used by `[ESP*]` and the front-panel button handler.
+- Strip SD-card support (saves ~6 KB) — but `$F` / `$FM` are used.
+
+None of those trades are appealing. So expressions stay disabled.
+
+**Implication:** any firmware change that needs grblHAL expressions
+(e.g., a per-tester `tc.macro` that does conditional branching, or any
+G-code template that uses `#<param>` arithmetic) must be implemented in
+C as a hook (`grbl.on_tool_selected`, `on_user_command`, etc.) instead
+of as an `.nc` macro. The toolsetter cleanup hook
+(`himill_clean_toolsetter`) is an example of doing it in C because
+expressions weren't available.
+
+If you ever revisit this:
+
+1. `pio run -e himill_d1s -v 2>&1 | grep "Flash:"` after toggling
+   `-D NGC_EXPRESSIONS_ENABLE=On` in `[env:himill_d1s].build_flags`.
+2. If flash overflow: the linker map file
+   (`.pio/build/himill_d1s/firmware.map`) shows the largest functions —
+   target the unused-in-our-build ones for `#if 0` carve-outs.
+3. Consider migrating to `STM32F1xx` HD variant (512 KB flash) chips
+   if they're a drop-in replacement for the F103RCT6 — would buy ~250
+   KB headroom. (Investigate package compatibility first.)
+
+### General flash discipline
+
+When adding features:
+
+- Audit before enabling new core flags — most cost 1-3 KB.
+- Static `const` strings for setting names/descriptions cost flash
+  too; reuse existing strings where reasonable.
+- Avoid `printf` / `snprintf` family pulled in from a single new path —
+  the float-formatting variants pull in 8+ KB of libc.
 
 ## Resume checklist
 
 When resuming this work:
 
 1. Read this README first
-2. Check `our_findings/session_*.md` (when populated) for the most recent
-   session's notes
+2. Check `our_findings/session_*.md` for chronological notes; the most
+   recent (as of this writing) is
+   `session_2026-04-30_to_05-03_pendant_defaults_chopper.md` covering
+   the SmartPendant integration, NVS factory seeding, `$342` baked
+   default, and the `$451` TMC chopper-mode setting.
 3. Run `pio run -e himill_d1s` to confirm a clean build
 4. Use `tools/himill_flash.py .pio/build/himill_d1s/firmware.bin` for normal
    USB bootloader flashing via `[BOOT]`
@@ -300,3 +459,13 @@ When resuming this work:
 7. Check `EGSender/docs/controllers/himill_d1s.md` for sender-side context
 8. Memory file `project_d1s_firmware_flash.md` (auto-memory) has the
    session-to-session pointers
+9. Auto-memory invariants worth preserving (see `memory/MEMORY.md`):
+   - `project_d1s_mux_write_all_mpg.md` — `mux_write_all` MUST broadcast
+     to the MPG stream while `sys.mpg_mode` is true. Regression
+     symptom: alternating `|MPG:1|` / `|MPG:0|` at ~0.5 Hz, pendant
+     unresponsive.
+   - `project_user_smartpendant.md` — pendant retries `0x8B` if it
+     never sees `|MPG:1` in status replies. Hostile to any wrapper
+     that swallows status reports.
+   - `project_d1s_back_gx12_uart4.md` — GX12-4P pinout for the rear
+     pendant connector.
