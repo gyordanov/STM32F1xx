@@ -908,6 +908,7 @@ static void himill_stream_changed (stream_type_t type)
 
 typedef struct {
     bool enable;
+    bool stepper_spreadcycle;  // true = SpreadCycle (default), false = StealthChop
 } himill_settings_t;
 
 static himill_settings_t himill_settings;
@@ -917,6 +918,17 @@ static on_tool_selected_ptr on_tool_selected;
 static const setting_group_detail_t himill_setting_groups[] = {
     { Group_Root, Group_UserSettings, "HiMill D1S" }
 };
+
+// PD2 = TMC STEPPER_MODE pin. HIGH = SpreadCycle, LOW = StealthChop.
+// TMCs are in standalone mode on D1S — current/microsteps are wired in
+// hardware. STEPPER_MODE is the only chopper knob the MCU can toggle.
+// SpreadCycle is the default for cutting (full torque at speed, immediate
+// accel response). StealthChop is useful for slow probing, drag-knife,
+// or quiet jogging — at the cost of reduced high-speed torque.
+static void apply_stepper_mode (bool spreadcycle)
+{
+    HAL_GPIO_WritePin(GPIOD, GPIO_PIN_2, spreadcycle ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
 
 static status_code_t himill_set_clean (setting_id_t id, uint_fast16_t value)
 {
@@ -930,8 +942,22 @@ static uint32_t himill_get_clean (setting_id_t id)
     return himill_settings.enable ? 1 : 0;
 }
 
+static status_code_t himill_set_stepper_mode (setting_id_t id, uint_fast16_t value)
+{
+    himill_settings.stepper_spreadcycle = !!value;
+    hal.nvs.memcpy_to_nvs(himill_nvs_address, (uint8_t *)&himill_settings, sizeof(himill_settings_t), true);
+    apply_stepper_mode(himill_settings.stepper_spreadcycle);
+    return Status_OK;
+}
+
+static uint32_t himill_get_stepper_mode (setting_id_t id)
+{
+    return himill_settings.stepper_spreadcycle ? 1 : 0;
+}
+
 static const setting_detail_t himill_setting_detail[] = {
-    { Setting_UserDefined_0, Group_UserSettings, "Clean toolsetter before M6", NULL, Format_Bool, NULL, NULL, NULL, Setting_NonCoreFn, himill_set_clean, himill_get_clean, NULL }
+    { Setting_UserDefined_0, Group_UserSettings, "Clean toolsetter before M6", NULL, Format_Bool, NULL, NULL, NULL, Setting_NonCoreFn, himill_set_clean, himill_get_clean, NULL },
+    { Setting_UserDefined_1, Group_UserSettings, "TMC chopper mode", NULL, Format_RadioButtons, "StealthChop,SpreadCycle", NULL, NULL, Setting_NonCoreFn, himill_set_stepper_mode, himill_get_stepper_mode, NULL }
 };
 
 // Seed G30 (tool-change parking position) and G59.3 (toolsetter location)
@@ -985,7 +1011,9 @@ static void seed_himill_coord_defaults (void)
 static void himill_settings_restore (void)
 {
     himill_settings.enable = false;
+    himill_settings.stepper_spreadcycle = true;  // default: SpreadCycle (cutting)
     hal.nvs.memcpy_to_nvs(himill_nvs_address, (uint8_t *)&himill_settings, sizeof(himill_settings_t), true);
+    apply_stepper_mode(himill_settings.stepper_spreadcycle);
     seed_himill_coord_defaults();
 }
 
@@ -993,6 +1021,7 @@ static void himill_settings_load (void)
 {
     if (hal.nvs.memcpy_from_nvs((uint8_t *)&himill_settings, himill_nvs_address, sizeof(himill_settings_t), true) != NVS_TransferResult_OK)
         himill_settings_restore();
+    apply_stepper_mode(himill_settings.stepper_spreadcycle);
     seed_himill_coord_defaults();
 }
 
@@ -1064,13 +1093,10 @@ static void on_report_options_himill (bool newopt)
 
 void board_init (void)
 {
-    // PD2 = TMC STEPPER_MODE pin. HIGH = SpreadCycle (fast/cutting),
-    // LOW = StealthChop (silent). On the D1S the cooling fan runs
-    // continuously regardless of mode, so the silence advantage of
-    // StealthChop is moot — go straight to fast mode for the better
-    // high-speed torque + the 2000 mm/min achievable on X/Y. This
-    // mirrors what MaxMake's [LASER_MODE:1] does for laser jobs, just
-    // applied permanently at boot.
+    // PD2 = TMC STEPPER_MODE pin. Initial level is driven HIGH (SpreadCycle)
+    // here; himill_settings_load will reapply the user-selected mode once
+    // NVS is up. Worst case if NVS read fails we stay on SpreadCycle, which
+    // is the cutting default.
     __HAL_RCC_GPIOD_CLK_ENABLE();
     GPIO_InitTypeDef gpio_init = {
         .Pin = GPIO_PIN_2,
