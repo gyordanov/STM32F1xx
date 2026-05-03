@@ -59,6 +59,254 @@ static on_report_options_ptr   on_report_options;
 static on_execute_realtime_ptr on_execute_realtime;
 static on_stream_changed_ptr   on_stream_changed;
 
+#if RGB_LED_ENABLE == 2
+
+#define HIMILL_FRONT_RGB_LEDS  24
+#define HIMILL_BUTTON_RGB_LEDS 1
+
+static on_state_change_ptr on_state_change;
+
+typedef struct {
+    GPIO_TypeDef *port;
+    uint32_t bit;
+} himill_ws2812_line_t;
+
+static rgb_color_t himill_front_leds[HIMILL_FRONT_RGB_LEDS];
+static rgb_color_t himill_button_led;
+
+static const himill_ws2812_line_t himill_front_rgb = {
+    .port = AUXOUTPUT5_PORT,
+    .bit = 1UL << AUXOUTPUT5_PIN
+};
+
+static const himill_ws2812_line_t himill_button_rgb = {
+    .port = AUXOUTPUT6_PORT,
+    .bit = 1UL << AUXOUTPUT6_PIN
+};
+
+#define HIMILL_WS2812_DELAY_0H() __asm__ volatile ( \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" \
+    "nop\n\t""nop\n\t" ::: "memory")
+#define HIMILL_WS2812_DELAY_1H() __asm__ volatile ( \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" \
+    "nop\n\t""nop\n\t" ::: "memory")
+#define HIMILL_WS2812_DELAY_0L() __asm__ volatile ( \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" \
+    "nop\n\t""nop\n\t" ::: "memory")
+#define HIMILL_WS2812_DELAY_1L() __asm__ volatile ( \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" \
+    "nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t""nop\n\t" ::: "memory")
+
+static inline void himill_ws2812_high (const himill_ws2812_line_t *line)
+{
+    line->port->BSRR = line->bit << 16; // Inverted level shifter.
+}
+
+static inline void himill_ws2812_low (const himill_ws2812_line_t *line)
+{
+    line->port->BSRR = line->bit;
+}
+
+static inline void himill_ws2812_send_byte (const himill_ws2812_line_t *line, uint8_t value)
+{
+    for (uint_fast8_t mask = 0x80; mask; mask >>= 1) {
+        himill_ws2812_high(line);
+        if (value & mask) {
+            HIMILL_WS2812_DELAY_1H();
+            himill_ws2812_low(line);
+            HIMILL_WS2812_DELAY_1L();
+        } else {
+            HIMILL_WS2812_DELAY_0H();
+            himill_ws2812_low(line);
+            HIMILL_WS2812_DELAY_0L();
+        }
+    }
+}
+
+static inline void himill_ws2812_send_color (const himill_ws2812_line_t *line, rgb_color_t color)
+{
+    himill_ws2812_send_byte(line, color.G);
+    himill_ws2812_send_byte(line, color.R);
+    himill_ws2812_send_byte(line, color.B);
+}
+
+static void himill_ws2812_reset_delay (void)
+{
+    for (volatile uint32_t i = 0; i < 6000; i++)
+        __NOP();
+}
+
+static void himill_ws2812_send (const himill_ws2812_line_t *line, const rgb_color_t *leds, uint_fast16_t n_leds)
+{
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+
+    for (uint_fast16_t i = 0; i < n_leds; i++)
+        himill_ws2812_send_color(line, leds[i]);
+
+    himill_ws2812_low(line);
+
+    __set_PRIMASK(primask);
+    himill_ws2812_reset_delay();
+}
+
+static inline rgb_color_t himill_rgb_color (uint8_t red, uint8_t green, uint8_t blue)
+{
+    return (rgb_color_t){ .R = red, .G = green, .B = blue };
+}
+
+static void himill_rgb0_write (void)
+{
+    himill_ws2812_send(&himill_front_rgb, himill_front_leds, HIMILL_FRONT_RGB_LEDS);
+}
+
+static void himill_rgb1_write (void)
+{
+    himill_ws2812_send(&himill_button_rgb, &himill_button_led, HIMILL_BUTTON_RGB_LEDS);
+}
+
+static void himill_rgb0_out (uint16_t device, rgb_color_t color)
+{
+    if (device < HIMILL_FRONT_RGB_LEDS)
+        himill_front_leds[device] = color;
+}
+
+static void himill_rgb1_out (uint16_t device, rgb_color_t color)
+{
+    if (device < HIMILL_BUTTON_RGB_LEDS) {
+        himill_button_led = color;
+        himill_rgb1_write();
+    }
+}
+
+static void himill_rgb0_out_masked (uint16_t device, rgb_color_t color, rgb_color_mask_t mask)
+{
+    if (device < HIMILL_FRONT_RGB_LEDS) {
+        if (mask.R)
+            himill_front_leds[device].R = color.R;
+        if (mask.G)
+            himill_front_leds[device].G = color.G;
+        if (mask.B)
+            himill_front_leds[device].B = color.B;
+    }
+}
+
+static void himill_rgb1_out_masked (uint16_t device, rgb_color_t color, rgb_color_mask_t mask)
+{
+    if (device < HIMILL_BUTTON_RGB_LEDS) {
+        if (mask.R)
+            himill_button_led.R = color.R;
+        if (mask.G)
+            himill_button_led.G = color.G;
+        if (mask.B)
+            himill_button_led.B = color.B;
+        himill_rgb1_write();
+    }
+}
+
+static void himill_front_rgb_fill (rgb_color_t color)
+{
+    for (uint_fast8_t i = 0; i < HIMILL_FRONT_RGB_LEDS; i++)
+        himill_front_leds[i] = color;
+}
+
+static rgb_color_t himill_rgb_color_for_state (sys_state_t state)
+{
+    if (state & STATE_ESTOP)
+        return himill_rgb_color(96, 0, 0);
+    if (state & STATE_ALARM)
+        return himill_rgb_color(64, 0, 0);
+    if (state & STATE_TOOL_CHANGE)
+        return himill_rgb_color(64, 28, 0);
+    if (state & STATE_SAFETY_DOOR)
+        return himill_rgb_color(60, 18, 0);
+    if (state & STATE_HOLD)
+        return himill_rgb_color(56, 40, 0);
+    if (state & STATE_HOMING)
+        return himill_rgb_color(32, 32, 32);
+    if (state & STATE_JOG)
+        return himill_rgb_color(28, 0, 48);
+    if (state & STATE_CYCLE)
+        return himill_rgb_color(0, 0, 64);
+    if (state & STATE_CHECK_MODE)
+        return himill_rgb_color(0, 40, 40);
+    if (state & STATE_SLEEP)
+        return himill_rgb_color(0, 0, 0);
+
+    return himill_rgb_color(0, 32, 0);
+}
+
+static void himill_rgb_update_state (sys_state_t state)
+{
+    himill_front_rgb_fill(himill_rgb_color_for_state(state));
+    himill_rgb0_write();
+
+    himill_button_led = state & STATE_TOOL_CHANGE
+                         ? himill_rgb_color(64, 28, 0)
+                         : himill_rgb_color(0, 0, 0);
+    himill_rgb1_write();
+}
+
+static void himill_rgb_on_state_change (sys_state_t state)
+{
+    if (on_state_change)
+        on_state_change(state);
+
+    himill_rgb_update_state(state);
+}
+
+static void himill_rgb_init (void)
+{
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    himill_ws2812_low(&himill_front_rgb);
+    himill_ws2812_low(&himill_button_rgb);
+
+    GPIO_InitTypeDef gpio = {
+        .Pin = GPIO_PIN_5 | GPIO_PIN_15,
+        .Mode = GPIO_MODE_OUTPUT_PP,
+        .Speed = GPIO_SPEED_FREQ_HIGH
+    };
+    HAL_GPIO_Init(GPIOB, &gpio);
+
+    himill_ws2812_low(&himill_front_rgb);
+    himill_ws2812_low(&himill_button_rgb);
+
+    hal.rgb0.out = himill_rgb0_out;
+    hal.rgb0.out_masked = himill_rgb0_out_masked;
+    hal.rgb0.write = himill_rgb0_write;
+    hal.rgb0.cap = himill_rgb_color(255, 255, 255);
+    hal.rgb0.flags.is_blocking = On;
+    hal.rgb0.flags.is_strip = On;
+    hal.rgb0.num_devices = HIMILL_FRONT_RGB_LEDS;
+
+    hal.rgb1.out = himill_rgb1_out;
+    hal.rgb1.out_masked = himill_rgb1_out_masked;
+    hal.rgb1.write = himill_rgb1_write;
+    hal.rgb1.cap = himill_rgb_color(255, 255, 255);
+    hal.rgb1.flags.is_blocking = On;
+    hal.rgb1.flags.is_strip = On;
+    hal.rgb1.num_devices = HIMILL_BUTTON_RGB_LEDS;
+
+    on_state_change = grbl.on_state_change;
+    grbl.on_state_change = himill_rgb_on_state_change;
+
+    himill_rgb_update_state(STATE_IDLE);
+}
+
+#endif // RGB_LED_ENABLE == 2
+
 // Pendant traffic rate-limits. Without these the SmartPendant overwhelms
 // F103RC's main loop and produces self-sustained MPG toggle oscillation
 // (~200 enable/disable cycles per second observed; see /tmp/mpg3.txt
@@ -1105,6 +1353,10 @@ void board_init (void)
     };
     HAL_GPIO_Init(GPIOD, &gpio_init);
     HAL_GPIO_WritePin(GPIOD, GPIO_PIN_2, GPIO_PIN_SET);
+
+#if RGB_LED_ENABLE == 2
+    himill_rgb_init();
+#endif
 
     on_user_command         = grbl.on_user_command;
     grbl.on_user_command    = himill_user_command;

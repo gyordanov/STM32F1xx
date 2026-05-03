@@ -1,6 +1,6 @@
 # LED design for D1S (PB5 progress strip + PB15 inside-button)
 
-Status: deferred. This is design notes; no code yet.
+Status: first-pass implementation in `boards/himill_d1s.c`.
 
 ## Hardware
 
@@ -29,9 +29,9 @@ shows wrong colors.
    code (~80 lines), CPU is locked for ~30 µs per LED (≈ 720 µs for the
    24-LED strip + 30 µs for the button LED). We'd refresh only on state
    changes, not in any tight loop, so a sub-millisecond IRQ block once
-   per state transition is acceptable. Stepper IRQs don't fire during
-   the refresh, but we never refresh while moving — only on
-   state-change events.
+   per state transition is acceptable. Stepper IRQs do not fire during
+   the refresh, so this should be watched on hardware during Run/Hold
+   transitions.
 
 2. **SPI-driven** — STM32 SPI MOSI driving carefully prescaled so each
    WS2812 bit = 3 SPI bits (e.g., `100` for 0, `110` for 1). Frees the
@@ -44,8 +44,12 @@ shows wrong colors.
    has TIM2 / TIM3 with PWM capability + DMA streams that can update
    GPIO bytes. Overkill for refresh-on-state-change patterns.
 
-Recommendation: **path 1 (bit-bang)**. The refresh frequency is low
-enough that the CPU cost is negligible. ~80 lines in `boards/himill_d1s.c`.
+Implementation: **path 1 (bit-bang)**. The refresh frequency is low
+enough that the CPU cost is negligible. The D1S board code registers
+`hal.rgb0` as the 24-pixel front strip and `hal.rgb1` as the single
+inside-button pixel; `RGB_LED_ENABLE=2` enables the grblHAL M150 plugin
+on top of those HAL callbacks. `$536` / `$537` default to 24 / 1 to
+match the physical LED counts after a settings reset.
 
 ## Plug-in points in grblHAL
 
@@ -66,12 +70,15 @@ For the inside-button LED:
 
 - IDLE → solid green at low brightness
 - RUN  → blue, optionally progress-bar animation (1 LED per N% of plan)
-- HOLD → yellow blink
-- ALARM → red blink fast
+- HOLD → yellow
+- ALARM → red
 - DOOR → magenta solid
-- SAFETY_DOOR → orange blink
+- SAFETY_DOOR → orange
 - CHECK_MODE → cyan
 - ESTOP → red solid (same hardware indicator as ALARM, brighter)
+
+The first pass uses solid colors only; blinking/progress animations are
+left for a later non-blocking task.
 
 ## Inside-button LED logic
 
@@ -104,10 +111,9 @@ StreamType_SDCard kicks in; cleared when state leaves STATE_HOLD.
 
 ## Pick-up checklist for future work
 
-1. Pick bit-bang approach
-2. Implement `ws2812_send (uint8_t pin, uint32_t *grb_data, int n_leds)`
-   with `__disable_irq` + GPIO BSRR writes + NOP timing
-3. Hook `grbl.on_state_change` → call ws2812_send for the strip
-4. Hook polling for inside-button LED state
-5. Test with 24-LED strip + button LED
-6. Add settings for color customization (optional, after default works)
+1. Done: pick bit-bang approach.
+2. Done: implement WS2812 send with `__disable_irq` + GPIO BSRR writes + NOP timing.
+3. Done: hook `grbl.on_state_change` for front-strip state colors.
+4. Done: light the inside-button LED while `STATE_TOOL_CHANGE` is active.
+5. Pending: test with the physical 24-LED strip + button LED.
+6. Optional: add settings for color customization after default behavior is proven.

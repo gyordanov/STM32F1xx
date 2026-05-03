@@ -381,52 +381,46 @@ Still on the list:
 
 ## Build constraints / flash budget
 
-Current usage on `[env:himill_d1s]`:
+Current known-good usage on `[env:himill_d1s]` with RGB LEDs enabled:
 
 ```
-RAM:   60.5% (29 748 / 49 152 bytes)
-Flash: 82.8% (217 068 / 262 144 bytes)
+RAM:   60.8% (29 876 / 49 152 bytes)
+Flash: 83.7% (219 492 / 262 144 bytes)
 ```
 
-≈ 45 KB flash + 19 KB RAM headroom remain.
+Actual D1S app flash budget is 225,280 bytes because the linker reserves
+the HiMill app offset plus EEPROM emulation. The current non-expression
+`firmware.bin` is 219,988 bytes, leaving about 5.2 KB of real flash
+headroom.
 
-### NGC_EXPRESSIONS_ENABLE — does NOT fit
+### NGC_EXPRESSIONS_ENABLE — LTO attempt unsafe
 
 The grblHAL feature flag `NGC_EXPRESSIONS_ENABLE` (parameter expressions
-like `#1 = 5`, `[#1 + 2]`, branching, looping in gcode) **costs ~2.5 KB
-flash** and **does not fit on this board** without trade-offs. Tested
-2026-04-25; result hasn't changed despite recent feature additions.
+like `#1 = 5`, `[#1 + 2]`, branching, looping in gcode) still does not
+fit safely with the current D1S firmware.
 
-To enable it you must give up something:
+Tested 2026-05-03:
 
-- Drop `ROTATION_ENABLE` (saves ~2 KB) — but the user has the A axis as
-  rotary and uses it.
-- Drop `COMPATIBILITY_LEVEL=1` and accept `COMPATIBILITY_LEVEL=2` (saves
-  ~3 KB) — strips fields from `?`-status that some senders depend on.
-- Drop `MACROS_ENABLE` (saves ~2 KB) — would lose the button-action
-  plugin used by `[ESP*]` and the front-panel button handler.
-- Strip SD-card support (saves ~6 KB) — but `$F` / `$FM` are used.
+- Plain `-D NGC_EXPRESSIONS_ENABLE=On` still fails at link:
+  `.rodata` overflows the real `FLASH` region by 5,964 bytes.
+- The real app flash budget is 225,280 bytes, not PlatformIO's displayed
+  262,144 bytes: `256K - 4K EEPROM_EMUL - 0x8000 bootloader/app offset`.
+- Adding `-flto` lets GCC do whole-program optimization and the build
+  fits with the stock HiMill app offset preserved, but the resulting image
+  is unsafe on hardware.
+- LTO exposes a duplicate `_exit` between `Src/syscalls.c` and
+  `libnosys.a`; making the local `_exit` shim weak resolves that without
+  using `--allow-multiple-definition`.
+- Hardware result after flashing the LTO image: USB full-speed pull-up
+  appears, but enumeration fails during descriptor/control transfers
+  (`device descriptor read/64, error -32`, then `error -71`).
+- ELF inspection showed the root cause: vector-table entries such as
+  `USB_LP_CAN1_RX0_IRQHandler`, `SysTick_Handler`, `TIM2_IRQHandler`,
+  `USART2_IRQHandler`, and `UART4_IRQHandler` resolved to the startup
+  file's weak `Default_Handler` instead of the real C handlers.
 
-None of those trades are appealing. So expressions stay disabled.
-
-**Implication:** any firmware change that needs grblHAL expressions
-(e.g., a per-tester `tc.macro` that does conditional branching, or any
-G-code template that uses `#<param>` arithmetic) must be implemented in
-C as a hook (`grbl.on_tool_selected`, `on_user_command`, etc.) instead
-of as an `.nc` macro. The toolsetter cleanup hook
-(`himill_clean_toolsetter`) is an example of doing it in C because
-expressions weren't available.
-
-If you ever revisit this:
-
-1. `pio run -e himill_d1s -v 2>&1 | grep "Flash:"` after toggling
-   `-D NGC_EXPRESSIONS_ENABLE=On` in `[env:himill_d1s].build_flags`.
-2. If flash overflow: the linker map file
-   (`.pio/build/himill_d1s/firmware.map`) shows the largest functions —
-   target the unused-in-our-build ones for `#if 0` carve-outs.
-3. Consider migrating to `STM32F1xx` HD variant (512 KB flash) chips
-   if they're a drop-in replacement for the F103RCT6 — would buy ~250
-   KB headroom. (Investigate package compatibility first.)
+Do not flash the expression-enabled LTO build until the ISR/LTO issue is
+fixed and the final ELF is verified with `arm-none-eabi-nm` before flashing.
 
 ### General flash discipline
 
