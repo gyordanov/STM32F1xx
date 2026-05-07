@@ -43,8 +43,25 @@ static const io_stream_t *serialInit (uint32_t baud_rate);
 #if !SERIAL_PORT
 #error "Add SERIAL_PORT before adding SERIAL1_PORT!"
 #endif
+// Custom TX buffer size for SERIAL1_PORT, separate from TX_BUFFER_SIZE.
+// Reason: a board may need a large primary TX buffer (e.g. HiMill D1S sets
+// TX_BUFFER_SIZE=8192 on USART2 to absorb full $esh dumps) while the
+// secondary UART carries small MPG/jog packets that don't justify another
+// 8 KB allocation. With STM32F103RC's 48 KB RAM, two 8 KB TX buffers push
+// the build over the edge — settings dumps over telnet started locking up
+// at $5=7 deterministically. 1 KB is plenty for MPG protocol traffic and
+// can be overridden via build flag for boards that need more.
+#ifndef TX_BUFFER1_SIZE
+#define TX_BUFFER1_SIZE 1024
+#endif
+typedef struct {
+    volatile uint_fast16_t head;
+    volatile uint_fast16_t tail;
+    bool backup;
+    uint8_t data[TX_BUFFER1_SIZE];
+} stream_tx1_buffer_t;
 static stream_rx_buffer_t rxbuf1 = {0};
-static stream_tx_buffer_t txbuf1 = {0};
+static stream_tx1_buffer_t txbuf1 = {0};
 static enqueue_realtime_command_ptr enqueue_realtime_command1;
 static const io_stream_t *serial1Init(uint32_t baud_rate);
 #else
@@ -700,7 +717,7 @@ static uint16_t serial1TxCount (void)
 {
     uint32_t tail = txbuf1.tail, head = txbuf1.head;
 
-    return BUFCOUNT(head, tail, TX_BUFFER_SIZE) + (UART1->SR & USART_SR_TC ? 0 : 1);
+    return BUFCOUNT(head, tail, TX_BUFFER1_SIZE) + (UART1->SR & USART_SR_TC ? 0 : 1);
 }
 
 //
@@ -808,7 +825,11 @@ static const io_stream_t *serial1Init (uint32_t baud_rate)
 
         GPIO_InitStructure.Pin = (1<<UART1_RX_PIN);
         GPIO_InitStructure.Mode = GPIO_MODE_INPUT;
-        GPIO_InitStructure.Pull = GPIO_NOPULL;
+        // Pull-up so the RX pin idles HIGH (UART idle state) when nothing
+        // is connected. Without this, MPG_ENABLE=2 routes every floating-pin
+        // noise byte into protocol_enqueue_realtime_command via
+        // stream_mpg_check_enable, randomly triggering feed-hold / reset.
+        GPIO_InitStructure.Pull = GPIO_PULLUP;
         HAL_GPIO_Init(UART1_RX_PORT, &GPIO_InitStructure);
 
         HAL_NVIC_SetPriority(UART1_IRQ, 1, 0);

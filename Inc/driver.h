@@ -118,6 +118,8 @@
   #include "boards/supergerbil_map.h"
 #elif defined(BOARD_CREALITY_V4_2_2) || defined(BOARD_CREALITY_V4_2_7)
   #include "boards/creality_v4.2.x_map.h"
+#elif defined(BOARD_HIMILL_D1S)
+  #include "boards/himill_d1s_map.h"
 #elif defined(BOARD_MY_MACHINE)
   #include "boards/my_machine_map.h"
 #else // default board
@@ -156,6 +158,11 @@
     #define SPINDLE_PWM_TIMER_CH    2
     #define SPINDLE_PWM_TIMER_INV   1
     #define SPINDLE_PWM_AF_REMAP    0b01
+  #elif SPINDLE_PWM_PIN == 8 // PB8 - TIM4_CH3 (HiMill D1/D1S)
+    #define SPINDLE_PWM_TIMER_N     4
+    #define SPINDLE_PWM_TIMER_CH    3
+    #define SPINDLE_PWM_TIMER_INV   0
+    #define SPINDLE_PWM_AF_REMAP    0
   #elif SPINDLE_PWM_PIN == 9 // PB9 - TIM4_CH4
     #define SPINDLE_PWM_TIMER_N     4
     #define SPINDLE_PWM_TIMER_CH    4

@@ -1,3 +1,9 @@
+# PlatformIO build output
+.pio/
+
+# Codex session metadata
+.codex/
+
 # Windows thumbnail cache files
 Thumbs.db
 ehthumbs.db

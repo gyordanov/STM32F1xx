@@ -1,0 +1,3216 @@
+{
+  "schema": "grblhal-setting-descriptions.v1",
+  "generatedAt": "2026-05-03",
+  "source": {
+    "project": "grblHAL STM32F1xx checkout",
+    "enumSource": [
+      "grbl/settings.h",
+      "grbl/plugins.h"
+    ],
+    "descriptionTables": [
+      "grbl/ioports.c",
+      "grbl/kinematics/delta.c",
+      "grbl/settings.c",
+      "grbl/spindle_control.c",
+      "keypad/keypad.c",
+      "keypad/macros.c",
+      "plugins/esp_at.c",
+      "plugins/eventout.c",
+      "plugins/homing_pulloff.c",
+      "plugins/probe_relays.c",
+      "sdcard/macros.c"
+    ]
+  },
+  "notes": [
+    "Extracted from setting_descr_t tables in this checkout, not from a connected controller.",
+    "Preprocessor-gated rows are intentionally retained so sender defaults can cover other grblHAL builds.",
+    "For entries with multiple descriptions, prefer the variant whose conditions match the connected firmware when known.",
+    "Axis setting descriptions are normalized by grblHAL; use appliesTo for axis/range matching instead of blindly matching every raw numeric id.",
+    "Descriptions originate from grblHAL source files; preserve upstream license attribution if bundled in another project."
+  ],
+  "settings": [
+    {
+      "id": 0,
+      "key": "Setting_PulseMicroseconds",
+      "expr": "Setting_PulseMicroseconds",
+      "descriptions": [
+        {
+          "text": "Step pulse length in microseconds.\\nMinimum depends on the processor and is typically in the range of 1 - 2.5.\\n\\nThe length has to be reduced from the default value of 5 when max. step rate exceed approximately 140 kHz.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2242
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "key": "Setting_StepperIdleLockTime",
+      "expr": "Setting_StepperIdleLockTime",
+      "descriptions": [
+        {
+          "text": "Sets a short hold delay when stopping to let dynamics settle before disabling steppers. Value 255 keeps motors enabled.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2246
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "key": "Setting_StepInvertMask",
+      "expr": "Setting_StepInvertMask",
+      "descriptions": [
+        {
+          "text": "Inverts the step signals (active low).",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2247
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "key": "Setting_DirInvertMask",
+      "expr": "Setting_DirInvertMask",
+      "descriptions": [
+        {
+          "text": "Inverts the direction signals (active low).",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2248
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "key": "Setting_InvertStepperEnable",
+      "expr": "Setting_InvertStepperEnable",
+      "descriptions": [
+        {
+          "text": "Inverts the stepper driver enable signals. Most drivers uses active low enable requiring inversion.\\n\\nNOTE: If the stepper drivers shares the same enable signal only X is used.",
+          "conditions": [
+            "COMPATIBILITY_LEVEL <= 2"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2250
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        },
+        {
+          "text": "Inverts the stepper driver enable signals. Drivers using active high enable require inversion.\\n\\n",
+          "conditions": [
+            "else (previous branch: COMPATIBILITY_LEVEL <= 2)"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2254
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "key": "Setting_LimitPinsInvertMask",
+      "expr": "Setting_LimitPinsInvertMask",
+      "descriptions": [
+        {
+          "text": "Inverts the axis limit input signals.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2256
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "key": "Setting_InvertProbePin",
+      "expr": "Setting_InvertProbePin",
+      "descriptions": [
+        {
+          "text": "Inverts the probe input signal(s).",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2257
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "key": "Setting_GangedDirInvertMask",
+      "expr": "Setting_GangedDirInvertMask",
+      "descriptions": [
+        {
+          "text": "Inverts the direction signals for the second motor used for ganged axes.\\n\\nNOTE: This inversion will be applied in addition to the inversion from setting $3.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2262
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "key": "Setting_SpindlePWMOptions",
+      "expr": "Setting_SpindlePWMOptions",
+      "descriptions": [
+        {
+          "text": "Enable controls PWM output availability.\\nWhen `RPM controls spindle enable signal` is checked and M3 or M4 is active S0 switches it off and S > 0 switches it on.\\nWhen 'Ramping enable' is checked spin up and spin down time is calculated from $394 and $539 respectively.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2258
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "key": "Setting_StatusReportMask",
+      "expr": "Setting_StatusReportMask",
+      "descriptions": [
+        {
+          "text": "Specifies optional data included in status reports and if report is sent when homing.\\nIf Run substatus is enabled it may be used for simple probe protection.\\n\\nNOTE: Parser state will be sent separately after the status report and only on changes.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2265
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "key": "Setting_JunctionDeviation",
+      "expr": "Setting_JunctionDeviation",
+      "descriptions": [
+        {
+          "text": "Sets how fast grblHAL travels through consecutive motions. Lower value slows it down.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2269
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "key": "Setting_ArcTolerance",
+      "expr": "Setting_ArcTolerance",
+      "descriptions": [
+        {
+          "text": "Sets the G2 and G3 arc tracing accuracy based on radial error. Beware: A very small value may effect performance.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2270
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "key": "Setting_ReportInches",
+      "expr": "Setting_ReportInches",
+      "descriptions": [
+        {
+          "text": "Enables inch units when returning any position and rate value that is not a settings value.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2271
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "key": "Setting_ControlInvertMask",
+      "expr": "Setting_ControlInvertMask",
+      "descriptions": [
+        {
+          "text": "Inverts the control signals (active low).\\nNOTE: Block delete, Optional stop, EStop and Probe connected are optional signals, availability is driver dependent.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2272
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "key": "Setting_CoolantInvertMask",
+      "expr": "Setting_CoolantInvertMask",
+      "descriptions": [
+        {
+          "text": "Inverts the coolant and mist signals (active low).",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2275
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "key": "Setting_SpindleInvertMask",
+      "expr": "Setting_SpindleInvertMask",
+      "descriptions": [
+        {
+          "text": "Inverts the spindle on, counterclockwise and PWM signals (active low).",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2276
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "key": "Setting_ControlPullUpDisableMask",
+      "expr": "Setting_ControlPullUpDisableMask",
+      "descriptions": [
+        {
+          "text": "Disable the control signals pullup resistors. Potentially enables pulldown resistor if available.\\nNOTE: Block delete, Optional stop and EStop are optional signals, availability is driver dependent.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2277
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "key": "Setting_LimitPullUpDisableMask",
+      "expr": "Setting_LimitPullUpDisableMask",
+      "descriptions": [
+        {
+          "text": "Disable the limit signals pullup resistors. Potentially enables pulldown resistors if available.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2280
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "key": "Setting_ProbePullUpDisable",
+      "expr": "Setting_ProbePullUpDisable",
+      "descriptions": [
+        {
+          "text": "Disable the probe signal pullup resistor(s). Potentially enables pulldown resistor(s) if available.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2281
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "key": "Setting_SoftLimitsEnable",
+      "expr": "Setting_SoftLimitsEnable",
+      "descriptions": [
+        {
+          "text": "Enables soft limits checks within machine travel and sets alarm when exceeded. Requires homing.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2282
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "key": "Setting_HardLimitsEnable",
+      "expr": "Setting_HardLimitsEnable",
+      "descriptions": [
+        {
+          "text": "When enabled immediately halts motion and throws an alarm when a limit switch is triggered. In strict mode only homing is possible when a switch is engaged.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2283
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "key": "Setting_HomingEnable",
+      "expr": "Setting_HomingEnable",
+      "descriptions": [
+        {
+          "text": "Enables homing cycle. Requires limit switches on axes to be automatically homed.\\n\\nWhen `Enable single axis commands` is checked, single axis homing can be performed by $H<axis letter> commands.\\n\\nWhen `Allow manual` is checked, axes not homed automatically may be homed manually by $H or $H<axis letter> commands.\\n\\n`Override locks` is for allowing a soft reset to disable `Homing on startup required`.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2284
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "key": "Setting_HomingDirMask",
+      "expr": "Setting_HomingDirMask",
+      "descriptions": [
+        {
+          "text": "Homing searches for a switch in the positive direction. Set axis bit to search in negative direction.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2289
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "key": "Setting_HomingFeedRate",
+      "expr": "Setting_HomingFeedRate",
+      "descriptions": [
+        {
+          "text": "Feed rate to slowly engage limit switch to determine its location accurately.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2290
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "key": "Setting_HomingSeekRate",
+      "expr": "Setting_HomingSeekRate",
+      "descriptions": [
+        {
+          "text": "Seek rate to quickly find the limit switch before the slower locating phase.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2291
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "key": "Setting_HomingDebounceDelay",
+      "expr": "Setting_HomingDebounceDelay",
+      "descriptions": [
+        {
+          "text": "Sets a short delay between phases of homing cycle to let a switch debounce.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2292
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "key": "Setting_HomingPulloff",
+      "expr": "Setting_HomingPulloff",
+      "descriptions": [
+        {
+          "text": "Retract distance after triggering switch to disengage it. Homing will fail if switch isn't cleared.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2293
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "key": "Setting_G73Retract",
+      "expr": "Setting_G73Retract",
+      "descriptions": [
+        {
+          "text": "G73 retract distance (for chip breaking drilling).",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2294
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "key": "Setting_PulseDelayMicroseconds",
+      "expr": "Setting_PulseDelayMicroseconds",
+      "descriptions": [
+        {
+          "text": "Step pulse delay.\\n\\nWhen set > 0 and less than 2 the value is rounded up to 2 microseconds.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2295
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "key": "Setting_RpmMax",
+      "expr": "Setting_RpmMax",
+      "descriptions": [
+        {
+          "text": "Maximum spindle speed, can be overridden by spindle plugins.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2298
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "key": "Setting_RpmMin",
+      "expr": "Setting_RpmMin",
+      "descriptions": [
+        {
+          "text": "Minimum spindle speed, can be overridden by spindle plugins.\\n\\nWhen set > 0 $35 (PWM min value) may have to be set to get the configured RPM.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2299
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "key": "Setting_Mode",
+      "expr": "Setting_Mode",
+      "descriptions": [
+        {
+          "text": "Laser mode: consecutive G1/2/3 commands will not halt when spindle speed is changed.\\nLathe mode: allows use of G7, G8, G96 and G97.",
+          "conditions": [
+            "!LATHE_UVW_OPTION"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2302
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "key": "Setting_PWMFreq",
+      "expr": "Setting_PWMFreq",
+      "descriptions": [
+        {
+          "text": "Spindle PWM frequency.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2306
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "key": "Setting_PWMOffValue",
+      "expr": "Setting_PWMOffValue",
+      "descriptions": [
+        {
+          "text": "Spindle PWM off value in percent (duty cycle).",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2307
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "key": "Setting_PWMMinValue",
+      "expr": "Setting_PWMMinValue",
+      "descriptions": [
+        {
+          "text": "Spindle PWM min value in percent (duty cycle).",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2308
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "key": "Setting_PWMMaxValue",
+      "expr": "Setting_PWMMaxValue",
+      "descriptions": [
+        {
+          "text": "Spindle PWM max value in percent (duty cycle).",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2309
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "key": "Setting_SteppersEnergize",
+      "expr": "Setting_SteppersEnergize",
+      "descriptions": [
+        {
+          "text": "Specifies which steppers not to disable when stopped.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2310
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 38,
+      "key": "Setting_SpindlePPR",
+      "expr": "Setting_SpindlePPR",
+      "descriptions": [
+        {
+          "text": "Spindle encoder pulses per revolution.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2311
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 39,
+      "key": "Setting_EnableLegacyRTCommands",
+      "expr": "Setting_EnableLegacyRTCommands",
+      "descriptions": [
+        {
+          "text": "Enables \"normal\" processing of ?, ! and ~ characters when part of $-setting or comment. If disabled then they are added to the input string instead.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2312
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "key": "Setting_JogSoftLimited",
+      "expr": "Setting_JogSoftLimited",
+      "descriptions": [
+        {
+          "text": "Limit jog commands to machine workspace for homed axes.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2313
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "key": "Setting_ParkingEnable",
+      "expr": "Setting_ParkingEnable",
+      "descriptions": [
+        {
+          "text": "Enables parking cycle, requires parking axis homed.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2314
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "key": "Setting_ParkingAxis",
+      "expr": "Setting_ParkingAxis",
+      "descriptions": [
+        {
+          "text": "Define which axis that performs the parking motion.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2315
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 43,
+      "key": "Setting_HomingLocateCycles",
+      "expr": "Setting_HomingLocateCycles",
+      "descriptions": [
+        {
+          "text": "Number of homing passes. Minimum 1, maximum 128.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2316
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 44,
+      "key": "Setting_HomingCycle_1",
+      "expr": "Setting_HomingCycle_1",
+      "descriptions": [
+        {
+          "text": "Axes to home in first phase.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2317
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 45,
+      "key": "Setting_HomingCycle_2",
+      "expr": "Setting_HomingCycle_2",
+      "descriptions": [
+        {
+          "text": "Axes to home in second phase.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2318
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 46,
+      "key": "Setting_HomingCycle_3",
+      "expr": "Setting_HomingCycle_3",
+      "descriptions": [
+        {
+          "text": "Axes to home in third phase.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2319
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 47,
+      "key": "Setting_HomingCycle_4",
+      "expr": "Setting_HomingCycle_4",
+      "descriptions": [
+        {
+          "text": "Axes to home in fourth phase.",
+          "conditions": [
+            "N_AXIS > 3"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2321
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 48,
+      "key": "Setting_HomingCycle_5",
+      "expr": "Setting_HomingCycle_5",
+      "descriptions": [
+        {
+          "text": "Axes to home in fifth phase.",
+          "conditions": [
+            "N_AXIS > 4"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2324
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 49,
+      "key": "Setting_HomingCycle_6",
+      "expr": "Setting_HomingCycle_6",
+      "descriptions": [
+        {
+          "text": "Axes to home in sixth phase.",
+          "conditions": [
+            "N_AXIS > 5"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2327
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 50,
+      "key": "Setting_JogStepSpeed",
+      "expr": "Setting_JogStepSpeed",
+      "descriptions": [
+        {
+          "text": "Step jogging speed in millimeters per minute.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2329
+            },
+            {
+              "file": "keypad/keypad.c",
+              "table": "keypad_settings_descr",
+              "line": 71
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 51,
+      "key": "Setting_JogSlowSpeed",
+      "expr": "Setting_JogSlowSpeed",
+      "descriptions": [
+        {
+          "text": "Slow jogging speed in millimeters per minute.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2330
+            },
+            {
+              "file": "keypad/keypad.c",
+              "table": "keypad_settings_descr",
+              "line": 72
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 52,
+      "key": "Setting_JogFastSpeed",
+      "expr": "Setting_JogFastSpeed",
+      "descriptions": [
+        {
+          "text": "Fast jogging speed in millimeters per minute.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2331
+            },
+            {
+              "file": "keypad/keypad.c",
+              "table": "keypad_settings_descr",
+              "line": 73
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 53,
+      "key": "Setting_JogStepDistance",
+      "expr": "Setting_JogStepDistance",
+      "descriptions": [
+        {
+          "text": "Jog distance for single step jogging.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2332
+            },
+            {
+              "file": "keypad/keypad.c",
+              "table": "keypad_settings_descr",
+              "line": 74
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 54,
+      "key": "Setting_JogSlowDistance",
+      "expr": "Setting_JogSlowDistance",
+      "descriptions": [
+        {
+          "text": "Jog distance before automatic stop.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2333
+            },
+            {
+              "file": "keypad/keypad.c",
+              "table": "keypad_settings_descr",
+              "line": 75
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 55,
+      "key": "Setting_JogFastDistance",
+      "expr": "Setting_JogFastDistance",
+      "descriptions": [
+        {
+          "text": "Jog distance before automatic stop.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2334
+            },
+            {
+              "file": "keypad/keypad.c",
+              "table": "keypad_settings_descr",
+              "line": 76
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 56,
+      "key": "Setting_ParkingPulloutIncrement",
+      "expr": "Setting_ParkingPulloutIncrement",
+      "descriptions": [
+        {
+          "text": "Spindle pull-out and plunge distance in mm.Incremental distance.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2335
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 57,
+      "key": "Setting_ParkingPulloutRate",
+      "expr": "Setting_ParkingPulloutRate",
+      "descriptions": [
+        {
+          "text": "Spindle pull-out/plunge slow feed rate in mm/min.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2336
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 58,
+      "key": "Setting_ParkingTarget",
+      "expr": "Setting_ParkingTarget",
+      "descriptions": [
+        {
+          "text": "Parking axis target. In mm, as machine coordinate [-max_travel, 0].",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2337
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 59,
+      "key": "Setting_ParkingFastRate",
+      "expr": "Setting_ParkingFastRate",
+      "descriptions": [
+        {
+          "text": "Parking fast rate to target after pull-out in mm/min.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2338
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 60,
+      "key": "Setting_RestoreOverrides",
+      "expr": "Setting_RestoreOverrides",
+      "descriptions": [
+        {
+          "text": "Restore overrides to default values at program end.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2339
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 61,
+      "key": "Setting_DoorOptions",
+      "expr": "Setting_DoorOptions",
+      "descriptions": [
+        {
+          "text": "Ignore when idle: disregard door signal in IDLE state to allow jogging etc. Available when controller has door input.\nKeep coolant state on open: do not turn off coolant if on.",
+          "conditions": [
+            "!defined(NO_SAFETY_DOOR_SUPPORT)"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2341
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 62,
+      "key": "Setting_SleepEnable",
+      "expr": "Setting_SleepEnable",
+      "descriptions": [
+        {
+          "text": "Enable sleep mode.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2344
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 63,
+      "key": "Setting_HoldActions",
+      "expr": "Setting_HoldActions",
+      "descriptions": [
+        {
+          "text": "Actions taken during feed hold and on resume from feed hold.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2345
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 64,
+      "key": "Setting_ForceInitAlarm",
+      "expr": "Setting_ForceInitAlarm",
+      "descriptions": [
+        {
+          "text": "Start in alarm mode after a cold reset.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2346
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 65,
+      "key": "Setting_ProbingFlags",
+      "expr": "Setting_ProbingFlags",
+      "descriptions": [
+        {
+          "text": "Allow feed override during probing and/or limit probing commands to machine workspace for homed axes.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2347
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 66,
+      "key": "Setting_LinearSpindlePiece1",
+      "expr": "Setting_LinearSpindlePiece1",
+      "descriptions": [
+        {
+          "text": "Comma separated list of values: RPM_MIN, RPM_LINE_A1, RPM_LINE_B1, set to blank to disable.",
+          "conditions": [
+            "ENABLE_SPINDLE_LINEARIZATION"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2349
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 67,
+      "key": "Setting_LinearSpindlePiece2",
+      "expr": "Setting_LinearSpindlePiece2",
+      "descriptions": [
+        {
+          "text": "Comma separated list of values: RPM_POINT12, RPM_LINE_A2, RPM_LINE_B2, set to blank to disable.",
+          "conditions": [
+            "ENABLE_SPINDLE_LINEARIZATION",
+            "SPINDLE_NPWM_PIECES > 1"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2351
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 68,
+      "key": "Setting_LinearSpindlePiece3",
+      "expr": "Setting_LinearSpindlePiece3",
+      "descriptions": [
+        {
+          "text": "Comma separated list of values: RPM_POINT23, RPM_LINE_A3, RPM_LINE_B3, set to blank to disable.",
+          "conditions": [
+            "ENABLE_SPINDLE_LINEARIZATION",
+            "SPINDLE_NPWM_PIECES > 2"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2354
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 69,
+      "key": "Setting_LinearSpindlePiece4",
+      "expr": "Setting_LinearSpindlePiece4",
+      "descriptions": [
+        {
+          "text": "Comma separated list of values: RPM_POINT34, RPM_LINE_A4, RPM_LINE_B4, set to blank to disable.",
+          "conditions": [
+            "ENABLE_SPINDLE_LINEARIZATION",
+            "SPINDLE_NPWM_PIECES > 3"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2357
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 73,
+      "key": "Setting_WifiMode",
+      "expr": "Setting_WifiMode",
+      "descriptions": [
+        {
+          "text": "WiFi Mode.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 936
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 74,
+      "key": "Setting_WiFi_STA_SSID",
+      "expr": "Setting_WiFi_STA_SSID",
+      "descriptions": [
+        {
+          "text": "WiFi Station (STA) SSID.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 937
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 75,
+      "key": "Setting_WiFi_STA_Password",
+      "expr": "Setting_WiFi_STA_Password",
+      "descriptions": [
+        {
+          "text": "WiFi Station (STA) Password.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 938
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 76,
+      "key": "Setting_WiFi_AP_SSID",
+      "expr": "Setting_WiFi_AP_SSID",
+      "descriptions": [
+        {
+          "text": "WiFi Access Point (AP) SSID.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 944
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 77,
+      "key": "Setting_WiFi_AP_Password",
+      "expr": "Setting_WiFi_AP_Password",
+      "descriptions": [
+        {
+          "text": "WiFi Access Point (AP) Password.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 945
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 79,
+      "key": "Setting_Wifi_AP_Channel",
+      "expr": "Setting_Wifi_AP_Channel",
+      "descriptions": [
+        {
+          "text": "WiFi Access Point (AP) channel to use.\\n May be overridden when connecting to an Access Point as station or by country setting.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 948
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 90,
+      "key": "Setting_PositionPGain",
+      "expr": "Setting_PositionPGain",
+      "descriptions": [
+        {
+          "text": "",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2360
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 91,
+      "key": "Setting_PositionIGain",
+      "expr": "Setting_PositionIGain",
+      "descriptions": [
+        {
+          "text": "",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2361
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 92,
+      "key": "Setting_PositionDGain",
+      "expr": "Setting_PositionDGain",
+      "descriptions": [
+        {
+          "text": "",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2362
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 95,
+      "key": "Setting_PositionIMaxError",
+      "expr": "Setting_PositionIMaxError",
+      "descriptions": [
+        {
+          "text": "Spindle sync PID max integrator error.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2363
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 100,
+      "key": "Setting_AxisStepsPerMM",
+      "expr": "Setting_AxisStepsPerMM",
+      "appliesTo": {
+        "kind": "axis_setting_base",
+        "startId": 100,
+        "endId": 108,
+        "maxAxes": 9,
+        "label": "axis travel resolution"
+      },
+      "descriptions": [
+        {
+          "text": "Travel resolution in steps per millimeter.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2364
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 101,
+      "key": "Setting_AxisStepsPerMM + 1",
+      "expr": "(setting_id_t)(Setting_AxisStepsPerMM + 1)",
+      "appliesTo": {
+        "kind": "axis_setting_variant",
+        "normalizedId": 100,
+        "condition": "axis_is_rotary(axis_offset)",
+        "note": "Do not match this by raw id alone; grblHAL uses it as the rotary-axis variant of Setting_AxisStepsPerMM."
+      },
+      "descriptions": [
+        {
+          "text": "Travel resolution in steps per degree.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2365
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 110,
+      "key": "Setting_AxisMaxRate",
+      "expr": "Setting_AxisMaxRate",
+      "appliesTo": {
+        "kind": "axis_setting_base",
+        "startId": 110,
+        "endId": 118,
+        "maxAxes": 9,
+        "label": "axis max rate"
+      },
+      "descriptions": [
+        {
+          "text": "Maximum rate. Used as G0 rapid rate.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2366
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 120,
+      "key": "Setting_AxisAcceleration",
+      "expr": "Setting_AxisAcceleration",
+      "appliesTo": {
+        "kind": "axis_setting_base",
+        "startId": 120,
+        "endId": 128,
+        "maxAxes": 9,
+        "label": "axis acceleration"
+      },
+      "descriptions": [
+        {
+          "text": "Acceleration. Used for motion planning to not exceed motor torque and lose steps.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2367
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 130,
+      "key": "Setting_AxisMaxTravel",
+      "expr": "Setting_AxisMaxTravel",
+      "appliesTo": {
+        "kind": "axis_setting_base",
+        "startId": 130,
+        "endId": 138,
+        "maxAxes": 9,
+        "label": "axis max travel"
+      },
+      "descriptions": [
+        {
+          "text": "Maximum axis travel distance from homing switch. Determines valid machine space for soft-limits and homing search distances.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2375
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 160,
+      "key": "Setting_AxisBacklash",
+      "expr": "Setting_AxisBacklash",
+      "appliesTo": {
+        "kind": "axis_setting_base",
+        "startId": 160,
+        "endId": 168,
+        "maxAxes": 9,
+        "label": "axis backlash"
+      },
+      "descriptions": [
+        {
+          "text": "Backlash distance to compensate for.",
+          "conditions": [
+            "ENABLE_BACKLASH_COMPENSATION"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2377
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 170,
+      "key": "Setting_AxisAutoSquareOffset",
+      "expr": "Setting_AxisAutoSquareOffset",
+      "appliesTo": {
+        "kind": "axis_setting_base",
+        "startId": 170,
+        "endId": 178,
+        "maxAxes": 9,
+        "label": "axis dual-axis squaring offset"
+      },
+      "descriptions": [
+        {
+          "text": "Offset between sides to compensate for homing switches inaccuracies.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2379
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 180,
+      "key": "Setting_AxisHomingFeedRate",
+      "expr": "Setting_AxisHomingFeedRate",
+      "appliesTo": {
+        "kind": "axis_setting_base",
+        "startId": 180,
+        "endId": 188,
+        "maxAxes": 9,
+        "label": "axis homing feed rate"
+      },
+      "descriptions": [
+        {
+          "text": "Feed rate to slowly engage limit switch to determine its location accurately.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2380
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 190,
+      "key": "Setting_AxisHomingSeekRate",
+      "expr": "Setting_AxisHomingSeekRate",
+      "appliesTo": {
+        "kind": "axis_setting_base",
+        "startId": 190,
+        "endId": 198,
+        "maxAxes": 9,
+        "label": "axis homing seek rate"
+      },
+      "descriptions": [
+        {
+          "text": "Seek rate to quickly find the limit switch before the slower locating phase.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2381
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 290,
+      "key": "Setting_AxisExtended9",
+      "expr": "Setting_AxisExtended9",
+      "appliesTo": {
+        "kind": "axis_setting_base",
+        "startId": 290,
+        "endId": 298,
+        "maxAxes": 9,
+        "label": "axis extended setting 9"
+      },
+      "descriptions": [
+        {
+          "text": "Maximum axis travel distance from homing switch. Determines valid machine space for soft-limits and homing search distances.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/homing_pulloff.c",
+              "table": "plugin_settings_descr",
+              "line": 81
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 310,
+      "key": "Setting_Hostname2",
+      "expr": "Setting_Hostname2",
+      "descriptions": [
+        {
+          "text": "WiFi Access Point (AP) network hostname.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 949
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 312,
+      "key": "Setting_IpAddress2",
+      "expr": "Setting_IpAddress2",
+      "descriptions": [
+        {
+          "text": "WiFi Access Point (AP) static IP address.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 950
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 313,
+      "key": "Setting_Gateway2",
+      "expr": "Setting_Gateway2",
+      "descriptions": [
+        {
+          "text": "WiFi Access Point (AP) static gateway address.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 951
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 314,
+      "key": "Setting_NetMask2",
+      "expr": "Setting_NetMask2",
+      "descriptions": [
+        {
+          "text": "WiFi Access Point (AP) static netmask.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 952
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 320,
+      "key": "Setting_Hostname3",
+      "expr": "Setting_Hostname3",
+      "descriptions": [
+        {
+          "text": "WiFi Station (STA) network hostname.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 939
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 321,
+      "key": "Setting_IpMode3",
+      "expr": "Setting_IpMode3",
+      "descriptions": [
+        {
+          "text": "WiFi Station (STA) IP Mode.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 943
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 322,
+      "key": "Setting_IpAddress3",
+      "expr": "Setting_IpAddress3",
+      "descriptions": [
+        {
+          "text": "WiFi Station (STA) static IP address.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 940
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 323,
+      "key": "Setting_Gateway3",
+      "expr": "Setting_Gateway3",
+      "descriptions": [
+        {
+          "text": "WiFi Station (STA) static gateway address.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 941
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 324,
+      "key": "Setting_NetMask3",
+      "expr": "Setting_NetMask3",
+      "descriptions": [
+        {
+          "text": "WiFi Station (STA) static netmask.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 942
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 325,
+      "key": "Setting_TelnetPort3",
+      "expr": "Setting_TelnetPort3",
+      "descriptions": [
+        {
+          "text": "(Raw) Telnet port number listening for incoming connections.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/esp_at.c",
+              "table": "esp_at_settings_descr",
+              "line": 942
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 340,
+      "key": "Setting_SpindleAtSpeedTolerance",
+      "expr": "Setting_SpindleAtSpeedTolerance",
+      "descriptions": [
+        {
+          "text": "Spindle at speed tolerance as percentage deviation from programmed speed, set to 0 to disable.\\nIf not within tolerance after timeout set by spindle delays ($392, $394 or $539) alarm 14 is raised.\\nNOTE: if the delay is set to 0 the timeout defaults to one minute.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2382
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 341,
+      "key": "Setting_ToolChangeMode",
+      "expr": "Setting_ToolChangeMode",
+      "descriptions": [
+        {
+          "text": "Normal: allows jogging for manual touch off. Set new position manually.\\n\\nManual touch off: rapids to tool change position, use jogging or $TPW for touch off.\\n\\nManual touch off @ G59.3: rapids to tool change position, after change to G59.3 position for manual touch off. Use jogging or $TPW for touch off.\\n\\nAutomatic touch off @ G59.3: rapids to tool change position, after change to G59.3 position for automatic touch off.\\n\\nDepending on settings the tool (controlled point) will be moved back to the to original position after touch off. \"tool change position\" is either tool axis home, G59.3 or G30 position depending on settings.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2386
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 342,
+      "key": "Setting_ToolChangeProbingDistance",
+      "expr": "Setting_ToolChangeProbingDistance",
+      "descriptions": [
+        {
+          "text": "Maximum probing distance for automatic or $TPW touch off.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2393
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 343,
+      "key": "Setting_ToolChangeFeedRate",
+      "expr": "Setting_ToolChangeFeedRate",
+      "descriptions": [
+        {
+          "text": "Feed rate to slowly engage tool change sensor to determine the tool offset accurately.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2394
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 344,
+      "key": "Setting_ToolChangeSeekRate",
+      "expr": "Setting_ToolChangeSeekRate",
+      "descriptions": [
+        {
+          "text": "Seek rate to quickly find the tool change sensor before the slower locating phase.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2395
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 345,
+      "key": "Setting_ToolChangePulloffRate",
+      "expr": "Setting_ToolChangePulloffRate",
+      "descriptions": [
+        {
+          "text": "Pull-off rate for the retract move before the slower locating phase.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2396
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 346,
+      "key": "Setting_ToolChangeOptions",
+      "expr": "Setting_ToolChangeOptions",
+      "descriptions": [
+        {
+          "text": "Restore position after M6: when set the spindle is moved so that the controlled point (tool tip) is the same as before the M6 command,if not the spindle is only moved to the Z home position.\\n\\nChange tool at G30: when set rapids to the G30 position via tool axis home. Requires axes to be homed.\\n\\nFast probe pulloff: use G38.4 style probing for faster touch off.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2397
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 347,
+      "key": "Setting_DualAxisLengthFailPercent",
+      "expr": "Setting_DualAxisLengthFailPercent",
+      "descriptions": [
+        {
+          "text": "Dual axis length fail in percent of axis max travel.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2402
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 348,
+      "key": "Setting_DualAxisLengthFailMin",
+      "expr": "Setting_DualAxisLengthFailMin",
+      "descriptions": [
+        {
+          "text": "Dual axis length fail minimum distance.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2403
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 349,
+      "key": "Setting_DualAxisLengthFailMax",
+      "expr": "Setting_DualAxisLengthFailMax",
+      "descriptions": [
+        {
+          "text": "Dual axis length fail maximum distance.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 370,
+      "key": "Settings_IoPort_InvertIn",
+      "expr": "Settings_IoPort_InvertIn",
+      "descriptions": [
+        {
+          "text": "Invert IOPort inputs.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/ioports.c",
+              "table": "ioport_settings_descr",
+              "line": 1421
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 372,
+      "key": "Settings_IoPort_InvertOut",
+      "expr": "Settings_IoPort_InvertOut",
+      "descriptions": [
+        {
+          "text": "Invert IOPort output.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/ioports.c",
+              "table": "ioport_settings_descr",
+              "line": 1423
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 376,
+      "key": "Settings_RotaryAxes",
+      "expr": "Settings_RotaryAxes",
+      "descriptions": [
+        {
+          "text": "Designates axes as rotary, interpretation some other relevant axis settings is changed accordingly.",
+          "conditions": [
+            "N_AXIS > 3"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2409
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 384,
+      "key": "Setting_DisableG92Persistence",
+      "expr": "Setting_DisableG92Persistence",
+      "descriptions": [
+        {
+          "text": "Disables save/restore of G92 offset to non-volatile storage (NVS).",
+          "conditions": [
+            "COMPATIBILITY_LEVEL <= 1"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2406
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 392,
+      "key": "Setting_DoorSpindleOnDelay",
+      "expr": "Setting_DoorSpindleOnDelay",
+      "descriptions": [
+        {
+          "text": "Delay to allow spindle to spin up after safety door is closed or on resume from park.",
+          "conditions": [
+            "!defined(NO_SAFETY_DOOR_SUPPORT)"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2412
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 393,
+      "key": "Setting_DoorCoolantOnDelay",
+      "expr": "Setting_DoorCoolantOnDelay",
+      "descriptions": [
+        {
+          "text": "Delay to allow coolant to restart after safety door is closed or on resume from park.",
+          "conditions": [
+            "!defined(NO_SAFETY_DOOR_SUPPORT)"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2413
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 394,
+      "key": "Setting_SpindleOnDelay",
+      "expr": "Setting_SpindleOnDelay",
+      "descriptions": [
+        {
+          "text": "Delay to allow spindle to spin up. 0 or 0.5 - 20s\\nIf spindle supports \"at speed\" functionality it is the time to wait before alarm 14 is raised.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2415
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 395,
+      "key": "Setting_SpindleType",
+      "expr": "Setting_SpindleType",
+      "descriptions": [
+        {
+          "text": "Spindle selected on startup.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2418
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 398,
+      "key": "Setting_PlannerBlocks",
+      "expr": "Setting_PlannerBlocks",
+      "descriptions": [
+        {
+          "text": "Number of blocks in the planner buffer.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2419
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 481,
+      "key": "Setting_AutoReportInterval",
+      "expr": "Setting_AutoReportInterval",
+      "descriptions": [
+        {
+          "text": "Interval the real time report will be sent, set to 0 to disable.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2420
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 482,
+      "key": "Setting_TimeZoneOffset",
+      "expr": "Setting_TimeZoneOffset",
+      "descriptions": [
+        {
+          "text": "Offset in hours from UTC.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2421
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 484,
+      "key": "Setting_UnlockAfterEStop",
+      "expr": "Setting_UnlockAfterEStop",
+      "descriptions": [
+        {
+          "text": "If set unlock (by sending $X) is required after resetting a cleared E-Stop condition.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2422
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 486,
+      "key": "Setting_OffsetLock",
+      "expr": "Setting_OffsetLock",
+      "descriptions": [
+        {
+          "text": "Lock coordinate systems against accidental changes.",
+          "conditions": [
+            "COMPATIBILITY_LEVEL <= 1"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2424
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 487,
+      "key": "Setting_Spindle_OnPort",
+      "expr": "Setting_Spindle_OnPort",
+      "descriptions": [
+        {
+          "text": "On/off aux port.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1271
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 488,
+      "key": "Setting_Spindle_DirPort",
+      "expr": "Setting_Spindle_DirPort",
+      "descriptions": [
+        {
+          "text": "Direction aux port, set to -1 if not required.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1272
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 489,
+      "key": "Setting_Spindle_PWMPort",
+      "expr": "Setting_Spindle_PWMPort",
+      "descriptions": [
+        {
+          "text": "Spindle analog aux port. Must be PWM capable!",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1274
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 490,
+      "key": "Setting_MacroBase",
+      "expr": "Setting_MacroBase",
+      "appliesTo": {
+        "kind": "repeated_setting_range",
+        "startId": 490,
+        "endId": 499,
+        "label": "macro slots"
+      },
+      "descriptions": [
+        {
+          "text": "Macro content, separate blocks (lines) with the vertical bar character |.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "keypad/macros.c",
+              "table": "macro_settings_descr",
+              "line": 481
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 500,
+      "key": "Setting_MacroPortBase",
+      "expr": "Setting_MacroPortBase",
+      "appliesTo": {
+        "kind": "repeated_setting_range",
+        "startId": 500,
+        "endId": 509,
+        "label": "macro trigger ports"
+      },
+      "descriptions": [
+        {
+          "text": "Aux port number to use for the trigger pin input. Set to -1 to disable.\n\nNOTE: A hard reset of the controller is required after changing this setting.",
+          "conditions": [
+            "MACROS_ENABLE & 0x01"
+          ],
+          "sources": [
+            {
+              "file": "keypad/macros.c",
+              "table": "macro_settings_descr",
+              "line": 483
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 519,
+      "key": "Setting_EncoderSpindle",
+      "expr": "Setting_EncoderSpindle",
+      "descriptions": [
+        {
+          "text": "Specifies which spindle has the encoder attached.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2432
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 534,
+      "key": "Setting_NGCDebugOut",
+      "expr": "Setting_NGCDebugOut",
+      "descriptions": [
+        {
+          "text": "Example: (debug, metric mode: #<_metric>, coord system: #5220)",
+          "conditions": [
+            "NGC_EXPRESSIONS_ENABLE"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2427
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 536,
+      "key": "Setting_RGB_StripLengt0",
+      "expr": "Setting_RGB_StripLengt0",
+      "descriptions": [
+        {
+          "text": "Number of LEDS in strip 1.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2433
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 537,
+      "key": "Setting_RGB_StripLengt1",
+      "expr": "Setting_RGB_StripLengt1",
+      "descriptions": [
+        {
+          "text": "Number of LEDS in strip 2.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2434
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 538,
+      "key": "Setting_RotaryWrap",
+      "expr": "Setting_RotaryWrap",
+      "descriptions": [
+        {
+          "text": "Perform fast move to angle stored in G28 position.\\nUse:\\n G91G28<axisletter>0\\n G90\\n",
+          "conditions": [
+            "N_AXIS > 3"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2436
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 539,
+      "key": "Setting_SpindleOffDelay",
+      "expr": "Setting_SpindleOffDelay",
+      "descriptions": [
+        {
+          "text": "Delay to allow spindle to spin down. 0 or 0.5 - 20s\\nIf spindle supports \"at speed\" functionality it is the time to wait before alarm 14 is raised.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2429
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 590,
+      "key": "Setting_ButtonActionBase",
+      "expr": "Setting_ButtonActionBase",
+      "appliesTo": {
+        "kind": "repeated_setting_range",
+        "startId": 590,
+        "endId": 599,
+        "label": "macro button actions"
+      },
+      "descriptions": [
+        {
+          "text": "Action to take when the pin is triggered.",
+          "conditions": [
+            "MACROS_ENABLE & 0x01"
+          ],
+          "sources": [
+            {
+              "file": "keypad/macros.c",
+              "table": "macro_settings_descr",
+              "line": 484
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 640,
+      "key": "Setting_Kinematics0",
+      "expr": "Setting_Kinematics0",
+      "descriptions": [
+        {
+          "text": "Size that moves are broken up into to compensate for the non-linear movement of a delta robot.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/kinematics/delta.c",
+              "table": "kinematics_settings_descr",
+              "line": 749
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 641,
+      "key": "Setting_Kinematics1",
+      "expr": "Setting_Kinematics1",
+      "descriptions": [
+        {
+          "text": "Forearm length is the length of the connecting rod in millimeters.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/kinematics/delta.c",
+              "table": "kinematics_settings_descr",
+              "line": 750
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 642,
+      "key": "Setting_Kinematics2",
+      "expr": "Setting_Kinematics2",
+      "descriptions": [
+        {
+          "text": "Bicep length is the length of the driven arm in millimeters.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/kinematics/delta.c",
+              "table": "kinematics_settings_descr",
+              "line": 751
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 643,
+      "key": "Setting_Kinematics3",
+      "expr": "Setting_Kinematics3",
+      "descriptions": [
+        {
+          "text": "Base radius is the radius in millimeters from the center of the drive platform to the bicep drive axle.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/kinematics/delta.c",
+              "table": "kinematics_settings_descr",
+              "line": 752
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 644,
+      "key": "Setting_Kinematics4",
+      "expr": "Setting_Kinematics4",
+      "descriptions": [
+        {
+          "text": "End effector radius is the distance from the center of the end effector to the connection points of the main connecting rods.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/kinematics/delta.c",
+              "table": "kinematics_settings_descr",
+              "line": 753
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 646,
+      "key": "Setting_Kinematics6",
+      "expr": "Setting_Kinematics6",
+      "descriptions": [
+        {
+          "text": "Home position in degrees from biceps paralell to the floor.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/kinematics/delta.c",
+              "table": "kinematics_settings_descr",
+              "line": 754
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 648,
+      "key": "Setting_Kinematics8",
+      "expr": "Setting_Kinematics8",
+      "descriptions": [
+        {
+          "text": "Max travel in degrees from biceps paralell to the floor. Set to 0 to use calculated max.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/kinematics/delta.c",
+              "table": "kinematics_settings_descr",
+              "line": 755
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 650,
+      "key": "Setting_FSOptions",
+      "expr": "Setting_FSOptions",
+      "descriptions": [
+        {
+          "text": "Auto mount SD card on startup.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2442
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 671,
+      "key": "Setting_HomePinsInvertMask",
+      "expr": "Setting_HomePinsInvertMask",
+      "descriptions": [
+        {
+          "text": "Inverts the axis home input signals.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2443
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 673,
+      "key": "Setting_CoolantOnDelay",
+      "expr": "Setting_CoolantOnDelay",
+      "descriptions": [
+        {
+          "text": "Delay to allow coolant to start. 0 or 0.5 - 20s.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2444
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 675,
+      "key": "Setting_MacroATC_Options",
+      "expr": "Setting_MacroATC_Options",
+      "descriptions": [
+        {
+          "text": "Options for ATC macros.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "sdcard/macros.c",
+              "table": "macro_settings_descr",
+              "line": 395
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 676,
+      "key": "Setting_ResetActions",
+      "expr": "Setting_ResetActions",
+      "descriptions": [
+        {
+          "text": "Controls actions taken on a soft reset.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2445
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 678,
+      "key": "Setting_RelayPortToolsetter",
+      "expr": "Setting_RelayPortToolsetter",
+      "descriptions": [
+        {
+          "text": "Aux port number to use for toolsetter relay control. Set to -1 to disable.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/probe_relays.c",
+              "table": "relay_settings_descr",
+              "line": 154
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 679,
+      "key": "Setting_RelayPortProbe2",
+      "expr": "Setting_RelayPortProbe2",
+      "descriptions": [
+        {
+          "text": "Aux port number to use for probe 2 relay control. Set to -1 to disable.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/probe_relays.c",
+              "table": "relay_settings_descr",
+              "line": 155
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 680,
+      "key": "Setting_StepperEnableDelay",
+      "expr": "Setting_StepperEnableDelay",
+      "descriptions": [
+        {
+          "text": "Delay from stepper enable to first step output. The driver typically adds ~2ms to this.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2446
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 709,
+      "key": "Setting_SpindlePWMOptions1",
+      "expr": "Setting_SpindlePWMOptions1",
+      "descriptions": [
+        {
+          "text": "Enable controls PWM output availability.\\nWhen `RPM controls spindle enable signal` is checked and M3 or M4 is active S0 switches it off and S > 0 switches it on.\\nWhen 'Ramping enable' is checked spin up and spin down time is calculated from $394 and $539 respectively.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1275
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 716,
+      "key": "Setting_SpindleInvertMask1",
+      "expr": "Setting_SpindleInvertMask1",
+      "descriptions": [
+        {
+          "text": "Inverts the spindle on, counterclockwise and PWM signals (active low).",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1273
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 730,
+      "key": "Setting_RpmMax1",
+      "expr": "Setting_RpmMax1",
+      "descriptions": [
+        {
+          "text": "Maximum spindle speed.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1279
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 731,
+      "key": "Setting_RpmMin1",
+      "expr": "Setting_RpmMin1",
+      "descriptions": [
+        {
+          "text": "Minimum spindle speed.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1280
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 733,
+      "key": "Setting_PWMFreq1",
+      "expr": "Setting_PWMFreq1",
+      "descriptions": [
+        {
+          "text": "PWM frequency.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1281
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 734,
+      "key": "Setting_PWMOffValue1",
+      "expr": "Setting_PWMOffValue1",
+      "descriptions": [
+        {
+          "text": "PWM off value in percent (duty cycle).",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1282
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 735,
+      "key": "Setting_PWMMinValue1",
+      "expr": "Setting_PWMMinValue1",
+      "descriptions": [
+        {
+          "text": "PWM min value in percent (duty cycle).",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1283
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 736,
+      "key": "Setting_PWMMaxValue1",
+      "expr": "Setting_PWMMaxValue1",
+      "descriptions": [
+        {
+          "text": "PWM max value in percent (duty cycle).",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1284
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 737,
+      "key": "Setting_LinearSpindle1Piece1",
+      "expr": "Setting_LinearSpindle1Piece1",
+      "descriptions": [
+        {
+          "text": "Comma separated list of values: RPM_MIN, RPM_LINE_A1, RPM_LINE_B1, set to blank to disable.",
+          "conditions": [
+            "xENABLE_SPINDLE_LINEARIZATION"
+          ],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1286
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 738,
+      "key": "Setting_LinearSpindle1Piece2",
+      "expr": "Setting_LinearSpindle1Piece2",
+      "descriptions": [
+        {
+          "text": "Comma separated list of values: RPM_POINT12, RPM_LINE_A2, RPM_LINE_B2, set to blank to disable.",
+          "conditions": [
+            "xENABLE_SPINDLE_LINEARIZATION",
+            "SPINDLE_NPWM_PIECES > 1"
+          ],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1288
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 739,
+      "key": "Setting_LinearSpindle1Piece3",
+      "expr": "Setting_LinearSpindle1Piece3",
+      "descriptions": [
+        {
+          "text": "Comma separated list of values: RPM_POINT23, RPM_LINE_A3, RPM_LINE_B3, set to blank to disable.",
+          "conditions": [
+            "xENABLE_SPINDLE_LINEARIZATION",
+            "SPINDLE_NPWM_PIECES > 2"
+          ],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1291
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 740,
+      "key": "Setting_LinearSpindle1Piece4",
+      "expr": "Setting_LinearSpindle1Piece4",
+      "descriptions": [
+        {
+          "text": "Comma separated list of values: RPM_POINT34, RPM_LINE_A4, RPM_LINE_B4, set to blank to disable.",
+          "conditions": [
+            "xENABLE_SPINDLE_LINEARIZATION",
+            "SPINDLE_NPWM_PIECES > 3"
+          ],
+          "sources": [
+            {
+              "file": "grbl/spindle_control.c",
+              "table": "spindle1_settings_descr",
+              "line": 1294
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    },
+    {
+      "id": 750,
+      "key": "Setting_ActionBase",
+      "expr": "Setting_ActionBase",
+      "appliesTo": {
+        "kind": "repeated_setting_range",
+        "startId": 750,
+        "endId": 759,
+        "label": "event action slots"
+      },
+      "descriptions": [
+        {
+          "text": "Event triggering output port change.\\n\\nNOTE: the port can still be controlled by M62-M65 commands even when bound to an event.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/eventout.c",
+              "table": "event_settings_descr",
+              "line": 343
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 760,
+      "key": "Setting_ActionPortBase",
+      "expr": "Setting_ActionPortBase",
+      "appliesTo": {
+        "kind": "repeated_setting_range",
+        "startId": 760,
+        "endId": 769,
+        "label": "event action ports"
+      },
+      "descriptions": [
+        {
+          "text": "Aux output port number to bind to the associated event trigger. Set to -1 to disable.",
+          "conditions": [],
+          "sources": [
+            {
+              "file": "plugins/eventout.c",
+              "table": "event_settings_descr",
+              "line": 345
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 800,
+      "key": "Setting_AxisJerk",
+      "expr": "Setting_AxisJerk",
+      "appliesTo": {
+        "kind": "axis_setting_base",
+        "startId": 800,
+        "endId": 808,
+        "maxAxes": 9,
+        "label": "axis jerk"
+      },
+      "descriptions": [
+        {
+          "text": "Maximum rate of acceleration change - smoothes out acceleration profile up to max axis acceleration.\\n\\nMinimum value of x10 Acceleration setting to ensure decent acceleration times.\\nMaximum is calculated by current acceleration and stepper segment time.\\nAt Maximum value motion is effectively trapezoidal instead of constant jerk.\\n\\nCan be increased by adjusting ACCELERATION_TICKS_PER_SECOND to a larger value before compiling.",
+          "conditions": [
+            "ENABLE_JERK_ACCELERATION"
+          ],
+          "sources": [
+            {
+              "file": "grbl/settings.c",
+              "table": "setting_descr",
+              "line": 2369
+            }
+          ],
+          "conditionNote": "Preprocessor condition copied from source; include as a possible grblHAL variant."
+        }
+      ]
+    }
+  ]
+}
