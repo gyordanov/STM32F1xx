@@ -37,7 +37,8 @@ Protocol summary (values in hex, little-endian where multi-byte):
 
     Handshake (with bootloader):
         host -> dev  51 05 0a              — hello
-        dev  -> host a1 04 01              — ready
+        dev  -> host a1 02 01              — ready, bootloader v1.2
+                     a1 04 01              — ready, bootloader v1.4
 
     Data transfer (repeat per chunk):
         host -> dev  52 seq[2] 00 04 <1024 firmware bytes>    — full chunk
@@ -83,7 +84,12 @@ STM_PID = 0x5740
 ESP32_IMAGE_MAGIC = 0xE9
 
 HANDSHAKE_REQ = bytes.fromhex("51050a")
-HANDSHAKE_ACK = bytes.fromhex("a10401")
+HANDSHAKE_ACK_LEN = 3
+HANDSHAKE_ACKS = {
+    bytes.fromhex("a10201"): "1.2",
+    bytes.fromhex("a10401"): "1.4",
+}
+NO_WARRANTY_CONFIRMATION = "i agree"
 
 CHUNK_SIZE = 1024
 HTTP_UPLOAD_CHUNK_SIZE = 64 * 1024
@@ -138,11 +144,41 @@ def handshake(ser):
     print("→ Handshake")
     ser.write(HANDSHAKE_REQ)
     ser.flush()
-    reply = ser.read(len(HANDSHAKE_ACK))
-    if reply != HANDSHAKE_ACK:
-        sys.exit(f"Handshake failed: expected {HANDSHAKE_ACK.hex()}, "
+    reply = ser.read(HANDSHAKE_ACK_LEN)
+    bootloader_version = HANDSHAKE_ACKS.get(reply)
+    if bootloader_version is None:
+        expected = " or ".join(ack.hex() for ack in HANDSHAKE_ACKS)
+        sys.exit(f"Handshake failed: expected {expected}, "
                  f"got {reply.hex() or '(nothing)'}")
-    print(f"  OK ({reply.hex()})")
+    print(f"  OK ({reply.hex()}, bootloader v{bootloader_version})")
+    if bootloader_version == "1.2":
+        print("  WARNING: bootloader v1.2 is known to be more vulnerable "
+              "to power loss during flashing.")
+    return bootloader_version
+
+
+def require_no_warranty_confirmation(firmware_path):
+    print()
+    print("NO WARRANTY / FLASHING RISK NOTICE")
+    print()
+    print("This is an unofficial firmware flashing tool for HiMill D1/D1S.")
+    print("It is provided as-is, with no warranty and no guarantee of recovery.")
+    print("Flashing the wrong file, losing USB connection, or losing power can")
+    print("leave the controller unable to boot. Bootloader v1.2 is specifically")
+    print("known to be more vulnerable to power loss during flashing.")
+    print("This may void vendor support or warranty coverage.")
+    print("Before continuing, use stable power, keep the machine in a safe state,")
+    print("and make sure the selected firmware is intended for this controller.")
+    print()
+    print(f"Firmware selected: {firmware_path}")
+    print()
+    try:
+        answer = input(f'Type "{NO_WARRANTY_CONFIRMATION}" to continue: ')
+    except EOFError:
+        sys.exit("Confirmation required; aborting.")
+    if answer.strip().casefold() != NO_WARRANTY_CONFIRMATION:
+        sys.exit("Confirmation not accepted; aborting.")
+    print()
 
 
 def send_chunk(ser, seq, chunk, final=False):
@@ -983,8 +1019,11 @@ def main_stm32(argv=None):
 
     if not args.firmware.exists():
         sys.exit(f"Firmware not found: {args.firmware}")
+    if not args.firmware.is_file():
+        sys.exit(f"Firmware is not a file: {args.firmware}")
 
     port = args.port or find_port()
+    require_no_warranty_confirmation(args.firmware)
 
     if not args.no_boot:
         enter_bootloader(port)
