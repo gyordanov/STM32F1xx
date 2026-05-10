@@ -24,6 +24,7 @@
 #include "grbl/stream.h"
 #include "grbl/protocol.h"
 #include "grbl/motion_control.h"
+#include "grbl/state_machine.h"
 #include "grbl/nvs_buffer.h"
 
 // HiMill stock bootloader lives at 0x08000000. It waits for a USB-CDC
@@ -63,6 +64,7 @@ static on_stream_changed_ptr   on_stream_changed;
 
 #define HIMILL_FRONT_RGB_LEDS  24
 #define HIMILL_BUTTON_RGB_LEDS 1
+#define HIMILL_RGB_JOG_DEFER_MS 250
 
 static on_state_change_ptr on_state_change;
 
@@ -73,6 +75,9 @@ typedef struct {
 
 static rgb_color_t himill_front_leds[HIMILL_FRONT_RGB_LEDS];
 static rgb_color_t himill_button_led;
+static bool himill_rgb_runtime_enabled = false;
+static volatile uint32_t himill_rgb_deferred_ticks = 0;
+static bool himill_rgb_update_deferred = false;
 
 static const himill_ws2812_line_t himill_front_rgb = {
     .port = AUXOUTPUT5_PORT,
@@ -166,14 +171,26 @@ static inline rgb_color_t himill_rgb_color (uint8_t red, uint8_t green, uint8_t 
     return (rgb_color_t){ .R = red, .G = green, .B = blue };
 }
 
-static void himill_rgb0_write (void)
+static void himill_rgb0_write_raw (void)
 {
     himill_ws2812_send(&himill_front_rgb, himill_front_leds, HIMILL_FRONT_RGB_LEDS);
 }
 
-static void himill_rgb1_write (void)
+static void himill_rgb1_write_raw (void)
 {
     himill_ws2812_send(&himill_button_rgb, &himill_button_led, HIMILL_BUTTON_RGB_LEDS);
+}
+
+static void himill_rgb0_write (void)
+{
+    if (himill_rgb_runtime_enabled)
+        himill_rgb0_write_raw();
+}
+
+static void himill_rgb1_write (void)
+{
+    if (himill_rgb_runtime_enabled)
+        himill_rgb1_write_raw();
 }
 
 static void himill_rgb0_out (uint16_t device, rgb_color_t color)
@@ -258,12 +275,59 @@ static void himill_rgb_update_state (sys_state_t state)
     himill_rgb1_write();
 }
 
+static void himill_rgb_update_state_or_defer (sys_state_t state)
+{
+    // A 24-pixel WS2812 refresh blocks interrupts long enough to overrun
+    // UARTs at 115200 baud. Jogging flips Idle/Jog rapidly, exactly while
+    // senders are likely streaming $J= lines, so postpone the LED update
+    // until jogging has been quiet for a short window.
+    if (!himill_rgb_runtime_enabled)
+        return;
+
+    if ((state & STATE_JOG) || (state == STATE_IDLE && himill_rgb_update_deferred)) {
+        himill_rgb_update_deferred = true;
+        himill_rgb_deferred_ticks = hal.get_elapsed_ticks ? hal.get_elapsed_ticks() : 0;
+        return;
+    }
+
+    himill_rgb_update_deferred = false;
+    himill_rgb_update_state(state);
+}
+
+static void himill_rgb_flush_deferred_state (sys_state_t state)
+{
+    uint32_t now = hal.get_elapsed_ticks ? hal.get_elapsed_ticks() : 0;
+
+    if (himill_rgb_runtime_enabled && himill_rgb_update_deferred &&
+        !(state & STATE_JOG) && (now - himill_rgb_deferred_ticks) >= HIMILL_RGB_JOG_DEFER_MS) {
+        himill_rgb_update_deferred = false;
+        himill_rgb_update_state(state);
+    }
+}
+
+static void himill_rgb_set_enabled (bool enabled)
+{
+    bool was_enabled = himill_rgb_runtime_enabled;
+
+    himill_rgb_runtime_enabled = enabled;
+    himill_rgb_update_deferred = false;
+
+    if (enabled) {
+        himill_rgb_update_state_or_defer(state_get());
+    } else if (was_enabled) {
+        himill_front_rgb_fill(himill_rgb_color(0, 0, 0));
+        himill_button_led = himill_rgb_color(0, 0, 0);
+        himill_rgb0_write_raw();
+        himill_rgb1_write_raw();
+    }
+}
+
 static void himill_rgb_on_state_change (sys_state_t state)
 {
     if (on_state_change)
         on_state_change(state);
 
-    himill_rgb_update_state(state);
+    himill_rgb_update_state_or_defer(state);
 }
 
 static void himill_rgb_init (void)
@@ -302,7 +366,8 @@ static void himill_rgb_init (void)
     on_state_change = grbl.on_state_change;
     grbl.on_state_change = himill_rgb_on_state_change;
 
-    himill_rgb_update_state(STATE_IDLE);
+    if (himill_rgb_runtime_enabled)
+        himill_rgb_update_state(STATE_IDLE);
 }
 
 #endif // RGB_LED_ENABLE == 2
@@ -930,6 +995,10 @@ static void himill_poll_buttons (sys_state_t state)
         mpg_uart_stream->set_enqueue_rt_handler(himill_mpg_rx_filter);
 #endif
 
+#if RGB_LED_ENABLE == 2
+    himill_rgb_flush_deferred_state(state);
+#endif
+
     // PC4 = front-panel + inside-door buttons (parallel-wired, active-low).
     // PB1 = door switch.
     //
@@ -1154,9 +1223,16 @@ static void himill_stream_changed (stream_type_t type)
 #define HIMILL_CLEAN_DWELL_S  3.0f
 #define HIMILL_CLEAN_Z_LIFT   5.0f
 
+#define HIMILL_PROFILE_STATUS_REPORT_MASK       6143
+#define HIMILL_PROFILE_FS_OPTIONS               3
+#define HIMILL_PROFILE_TOOLCHANGE_PROBE_DIST    65.0f
+
+#define HIMILL_SETTING_STEPPER_SPREADCYCLE 0x01
+#define HIMILL_SETTING_RGB_STATUS_ENABLE   0x02
+
 typedef struct {
     bool enable;
-    bool stepper_spreadcycle;  // true = SpreadCycle (default), false = StealthChop
+    uint8_t flags;
 } himill_settings_t;
 
 static himill_settings_t himill_settings;
@@ -1178,10 +1254,15 @@ static void apply_stepper_mode (bool spreadcycle)
     HAL_GPIO_WritePin(GPIOD, GPIO_PIN_2, spreadcycle ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
+static void himill_settings_save (void)
+{
+    hal.nvs.memcpy_to_nvs(himill_nvs_address, (uint8_t *)&himill_settings, sizeof(himill_settings_t), true);
+}
+
 static status_code_t himill_set_clean (setting_id_t id, uint_fast16_t value)
 {
     himill_settings.enable = !!value;
-    hal.nvs.memcpy_to_nvs(himill_nvs_address, (uint8_t *)&himill_settings, sizeof(himill_settings_t), true);
+    himill_settings_save();
     return Status_OK;
 }
 
@@ -1192,21 +1273,134 @@ static uint32_t himill_get_clean (setting_id_t id)
 
 static status_code_t himill_set_stepper_mode (setting_id_t id, uint_fast16_t value)
 {
-    himill_settings.stepper_spreadcycle = !!value;
-    hal.nvs.memcpy_to_nvs(himill_nvs_address, (uint8_t *)&himill_settings, sizeof(himill_settings_t), true);
-    apply_stepper_mode(himill_settings.stepper_spreadcycle);
+    if (value)
+        himill_settings.flags |= HIMILL_SETTING_STEPPER_SPREADCYCLE;
+    else
+        himill_settings.flags &= ~HIMILL_SETTING_STEPPER_SPREADCYCLE;
+    himill_settings_save();
+    apply_stepper_mode(!!(himill_settings.flags & HIMILL_SETTING_STEPPER_SPREADCYCLE));
     return Status_OK;
 }
 
 static uint32_t himill_get_stepper_mode (setting_id_t id)
 {
-    return himill_settings.stepper_spreadcycle ? 1 : 0;
+    return (himill_settings.flags & HIMILL_SETTING_STEPPER_SPREADCYCLE) ? 1 : 0;
 }
+
+#if RGB_LED_ENABLE == 2
+static status_code_t himill_set_rgb_status (setting_id_t id, uint_fast16_t value)
+{
+    if (value)
+        himill_settings.flags |= HIMILL_SETTING_RGB_STATUS_ENABLE;
+    else
+        himill_settings.flags &= ~HIMILL_SETTING_RGB_STATUS_ENABLE;
+    himill_settings_save();
+    himill_rgb_set_enabled(!!(himill_settings.flags & HIMILL_SETTING_RGB_STATUS_ENABLE));
+    return Status_OK;
+}
+
+static uint32_t himill_get_rgb_status (setting_id_t id)
+{
+    return (himill_settings.flags & HIMILL_SETTING_RGB_STATUS_ENABLE) ? 1 : 0;
+}
+#endif
 
 static const setting_detail_t himill_setting_detail[] = {
     { Setting_UserDefined_0, Group_UserSettings, "Clean toolsetter before M6", NULL, Format_Bool, NULL, NULL, NULL, Setting_NonCoreFn, himill_set_clean, himill_get_clean, NULL },
-    { Setting_UserDefined_1, Group_UserSettings, "TMC chopper mode", NULL, Format_RadioButtons, "StealthChop,SpreadCycle", NULL, NULL, Setting_NonCoreFn, himill_set_stepper_mode, himill_get_stepper_mode, NULL }
+    { Setting_UserDefined_1, Group_UserSettings, "TMC chopper mode", NULL, Format_RadioButtons, "StealthChop,SpreadCycle", NULL, NULL, Setting_NonCoreFn, himill_set_stepper_mode, himill_get_stepper_mode, NULL },
+#if RGB_LED_ENABLE == 2
+    { Setting_UserDefined_2, Group_UserSettings, "RGB", NULL, Format_Bool, NULL, NULL, NULL, Setting_NonCoreFn, himill_set_rgb_status, himill_get_rgb_status, NULL }
+#endif
 };
+
+static void himill_profile_update_soft_limits (void)
+{
+    sys.soft_limits.mask = 0;
+
+    if (settings.limits.soft_enabled.mask) {
+        for (uint_fast8_t idx = N_AXIS; idx;) {
+            idx--;
+            if (bit_istrue(settings.limits.soft_enabled.mask, bit(idx)) && settings.axis[idx].max_travel < -0.0f)
+                bit_true(sys.soft_limits.mask, bit(idx));
+        }
+    }
+}
+
+static bool himill_profile_repair (void)
+{
+    bool changed = false;
+
+    if (settings.status_report.mask != HIMILL_PROFILE_STATUS_REPORT_MASK) {
+        settings.status_report.mask = HIMILL_PROFILE_STATUS_REPORT_MASK;
+        changed = true;
+    }
+
+    if (settings.fs_options.mask != HIMILL_PROFILE_FS_OPTIONS) {
+        settings.fs_options.mask = HIMILL_PROFILE_FS_OPTIONS;
+        changed = true;
+    }
+
+    if (settings.limits.soft_enabled.mask != AXES_BITMASK) {
+        settings.limits.soft_enabled.mask = AXES_BITMASK;
+        himill_profile_update_soft_limits();
+        changed = true;
+    }
+
+    if (!settings.limits.flags.hard_enabled || settings.limits.flags.check_at_init) {
+        settings.limits.flags.hard_enabled = On;
+        settings.limits.flags.check_at_init = Off;
+        sys.hard_limits.mask = AXES_BITMASK;
+        hal.limits.enable(true, (axes_signals_t){0});
+        changed = true;
+    }
+
+    if (!settings.limits.flags.jog_soft_limited) {
+        settings.limits.flags.jog_soft_limited = On;
+        changed = true;
+    }
+
+    if (!settings.homing.flags.force_set_origin) {
+        settings.homing.flags.force_set_origin = On;
+        changed = true;
+    }
+
+    if (!settings.probe.soft_limited || !settings.probe.toolsetter_auto_select ||
+        settings.probe.allow_feed_override || settings.probe.probe2_auto_select || settings.probe.enable_protection) {
+        settings.probe.allow_feed_override = Off;
+        settings.probe.soft_limited = On;
+        settings.probe.toolsetter_auto_select = On;
+        settings.probe.probe2_auto_select = Off;
+        settings.probe.enable_protection = Off;
+        if (hal.probe.configure)
+            hal.probe.configure(false, false);
+        changed = true;
+    }
+
+    if (settings.tool_change.mode != ToolChange_SemiAutomatic) {
+        settings.tool_change.mode = ToolChange_SemiAutomatic;
+        changed = true;
+    }
+
+    if (settings.tool_change.probing_distance != HIMILL_PROFILE_TOOLCHANGE_PROBE_DIST) {
+        settings.tool_change.probing_distance = HIMILL_PROFILE_TOOLCHANGE_PROBE_DIST;
+        changed = true;
+    }
+
+    if (settings.flags.no_restore_position_after_M6 ||
+        !settings.flags.tool_change_at_g30 || !settings.flags.tool_change_fast_pulloff) {
+        settings.flags.no_restore_position_after_M6 = Off;
+        settings.flags.tool_change_at_g30 = On;
+        settings.flags.tool_change_fast_pulloff = On;
+        changed = true;
+    }
+
+    if (changed) {
+        settings_write_global();
+        hal.stream.write_all("[MSG:D1S repaired]" ASCII_EOL);
+    }
+
+    return changed;
+}
 
 // Seed G30 (tool-change parking position) and G59.3 (toolsetter location)
 // to D1S factory defaults if either is uninitialized (all axes == 0).
@@ -1259,9 +1453,13 @@ static void seed_himill_coord_defaults (void)
 static void himill_settings_restore (void)
 {
     himill_settings.enable = false;
-    himill_settings.stepper_spreadcycle = true;  // default: SpreadCycle (cutting)
-    hal.nvs.memcpy_to_nvs(himill_nvs_address, (uint8_t *)&himill_settings, sizeof(himill_settings_t), true);
-    apply_stepper_mode(himill_settings.stepper_spreadcycle);
+    himill_settings.flags = HIMILL_SETTING_STEPPER_SPREADCYCLE; // default: SpreadCycle, RGB off
+    himill_settings_save();
+    apply_stepper_mode(!!(himill_settings.flags & HIMILL_SETTING_STEPPER_SPREADCYCLE));
+#if RGB_LED_ENABLE == 2
+    himill_rgb_set_enabled(!!(himill_settings.flags & HIMILL_SETTING_RGB_STATUS_ENABLE));
+#endif
+    himill_profile_repair();
     seed_himill_coord_defaults();
 }
 
@@ -1269,7 +1467,12 @@ static void himill_settings_load (void)
 {
     if (hal.nvs.memcpy_from_nvs((uint8_t *)&himill_settings, himill_nvs_address, sizeof(himill_settings_t), true) != NVS_TransferResult_OK)
         himill_settings_restore();
-    apply_stepper_mode(himill_settings.stepper_spreadcycle);
+
+    apply_stepper_mode(!!(himill_settings.flags & HIMILL_SETTING_STEPPER_SPREADCYCLE));
+#if RGB_LED_ENABLE == 2
+    himill_rgb_set_enabled(!!(himill_settings.flags & HIMILL_SETTING_RGB_STATUS_ENABLE));
+#endif
+    himill_profile_repair();
     seed_himill_coord_defaults();
 }
 

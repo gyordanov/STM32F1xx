@@ -96,6 +96,91 @@ These all work cleanly on our grblHAL build:
   sustains the configured 2000 mm/min ceiling. No hybrid mode (TMC's
   `TPWMTHRS` register) available — D1S TMCs are standalone, no UART
   to chip. Manual mode-flip is the only knob.
+- **`$452` RGB status LEDs** (added 2026-05-10):
+  `Setting_UserDefined_2`, `Format_Bool`. Default 0 (disabled) so the
+  D1S default path performs no WS2812 writes. Set `$452=1` to enable
+  automatic state colors and `M150`.
+- **Boot-time D1S profile repair** (added 2026-05-10):
+  board init repairs critical machine-specific settings and prints
+  `[MSG:D1S repaired]` if anything changed. Forced values: `$10=6143`,
+  `$650=3`, `$20=1`, `$21=1`, `$40=1`, `$65=10`, `$341=3`, `$342=65`,
+  `$346=7`. `$22` is not forced wholesale; only the "set machine origin
+  to 0" bit is forced on so other homing options remain user-configurable.
+
+## RGB LED / M150 reference
+
+The D1S build exposes two WS2812 RGB outputs:
+
+| Output | Pin | LEDs | Use |
+|--------|-----|------|-----|
+| `S0` / `hal.rgb0` | PB5 | 24 | Front LED strip; automatic machine-state color |
+| `S1` / `hal.rgb1` | PB15 | 1 | Inside cycle button LED; amber during tool-change wait |
+
+RGB output is runtime-gated by `$452`:
+
+```gcode
+$452=0 ; disable all D1S WS2812 writes (default)
+$452=1 ; enable automatic state colors and M150
+```
+
+Automatic RGB updates are deferred during jogging so a WS2812 refresh
+cannot block UART receive while `$J=` lines are arriving. The idle color
+is applied after jogging has been quiet briefly.
+
+Automatic front-strip state colors from `boards/himill_d1s.c`:
+
+| State | RGB | Hex | Meaning |
+|-------|-----|-----|---------|
+| E-stop | `96, 0, 0` | `#600000` | Emergency stop active |
+| Alarm | `64, 0, 0` | `#400000` | Alarm / locked state |
+| Tool change | `64, 28, 0` | `#401C00` | Waiting for manual tool change / resume |
+| Safety door | `60, 18, 0` | `#3C1200` | Safety door condition |
+| Hold | `56, 40, 0` | `#382800` | Feed hold / paused |
+| Homing | `32, 32, 32` | `#202020` | Homing cycle running |
+| Jog | `28, 0, 48` | `#1C0030` | Jogging |
+| Cycle / Run | `0, 0, 64` | `#000040` | Program or motion running |
+| Check mode | `0, 40, 40` | `#002828` | Check / dry-run mode |
+| Sleep | `0, 0, 0` | `#000000` | Asleep / LEDs off |
+| Idle | `0, 32, 0` | `#002000` | Ready / idle |
+
+The button LED is `#401C00` (`64, 28, 0`) only while
+`STATE_TOOL_CHANGE` is active; otherwise it is off.
+
+`M150` can manually set LED colors. Syntax used here:
+
+- `S0` = front strip, `S1` = button LED
+- `R` = red, `U` = green, `B` = blue, each `0..255`
+- `P` = brightness / intensity, `0..255`
+- `I` = front-strip pixel index, `0..23`
+
+Examples:
+
+```gcode
+; Front 24-LED strip: dim blue
+M150 S0 R0 U0 B255 P64
+
+; Front strip: low green / idle-like
+M150 S0 R0 U32 B0
+
+; Front strip: red
+M150 S0 R96 U0 B0
+
+; Front strip: turn off
+M150 S0 R0 U0 B0
+
+; Inside cycle button LED: amber/tool-change color
+M150 S1 R64 U28 B0
+
+; Inside cycle button LED: off
+M150 S1 R0 U0 B0
+
+; Set LED index 5 on the front strip to purple
+M150 S0 I5 R28 U0 B48
+```
+
+Manual `M150` colors are overwritten the next time grblHAL reports a
+machine-state change and the D1S state-color hook refreshes the LEDs.
+`M150` is ignored while `$452=0`.
 
 ## Open issues / unknowns
 
