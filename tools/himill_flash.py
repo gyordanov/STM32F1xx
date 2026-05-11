@@ -102,6 +102,39 @@ CMD_FINAL  = 0x53  # partial last chunk
 ACK_PREFIX = 0xA2  # chunk ack first byte
 
 
+def _format_serial_sample(data):
+    text = "".join(chr(b) if 32 <= b <= 126 else "." for b in data)
+    return f"{data.hex()} ({text})"
+
+
+def handshake_failure_hint(reply, extra=b""):
+    sample = reply + extra
+    if not sample:
+        return ("No bytes were received from the bootloader. Check the port, "
+                "USB cable, and power, then power-cycle the controller and retry.")
+
+    if sample.startswith(b"<"):
+        return ("The reply looks like a grblHAL status report, for example "
+                "`<Idle|...>`. That means the controller is still running the "
+                "firmware app instead of the HiMill bootloader. Close gusender, "
+                "serial monitors, and anything else connected to the controller, "
+                "then power-cycle and retry flashing.")
+
+    if sample.startswith(b"GrblHAL") or sample.startswith(b"Grb"):
+        return ("The reply looks like a grblHAL startup banner, so the app "
+                "rebooted instead of staying in the bootloader. Close any active "
+                "sender/serial connection, power-cycle the controller, and retry.")
+
+    if sample.startswith(b"ok") or sample.startswith(b"error"):
+        return ("The reply looks like normal grblHAL command output, so the "
+                "controller is still in the firmware app. Close any active "
+                "sender/serial connection and retry flashing after a power-cycle.")
+
+    return ("The reply is not a known HiMill bootloader handshake. Make sure no "
+            "sender or serial monitor is connected, power-cycle the controller, "
+            "and retry.")
+
+
 def find_port():
     """Scan serial ports for the STMicroelectronics Virtual COM Port."""
     matches = [p for p in serial.tools.list_ports.comports()
@@ -147,9 +180,13 @@ def handshake(ser):
     reply = ser.read(HANDSHAKE_ACK_LEN)
     bootloader_version = HANDSHAKE_ACKS.get(reply)
     if bootloader_version is None:
+        time.sleep(0.05)
+        extra = ser.read(min(getattr(ser, "in_waiting", 0), 80))
         expected = " or ".join(ack.hex() for ack in HANDSHAKE_ACKS)
-        sys.exit(f"Handshake failed: expected {expected}, "
-                 f"got {reply.hex() or '(nothing)'}")
+        got = _format_serial_sample(reply + extra) if reply or extra else "(nothing)"
+        sys.exit("Handshake failed: expected "
+                 f"{expected}, got {got}\n"
+                 f"Hint: {handshake_failure_hint(reply, extra)}")
     print(f"  OK ({reply.hex()}, bootloader v{bootloader_version})")
     if bootloader_version == "1.2":
         print("  WARNING: bootloader v1.2 is known to be more vulnerable "
@@ -212,6 +249,37 @@ def send_chunk(ser, seq, chunk, final=False):
         sys.exit(f"\nChunk {seq} ACK seq mismatch: got {ack_seq}")
 
 
+def send_jump_to_app_serial_fallback(port):
+    """Best-effort jump-to-app trigger using the OS CDC serial driver.
+
+    This is less exact than the PyUSB path because the serial driver may emit
+    intermediate line states while opening/closing the port. It is still better
+    than aborting after a completed flash on systems where PyUSB is installed
+    but has no usable backend, which is common on Windows without libusb.
+    """
+    try:
+        ser = serial.Serial()
+        ser.port = port
+        ser.baudrate = 115200
+        ser.timeout = 1
+        ser.write_timeout = 1
+        ser.dtr = False
+        ser.rts = False
+        ser.open()
+        try:
+            ser.setDTR(False)
+            ser.setRTS(False)
+            time.sleep(0.2)
+        finally:
+            ser.close()
+    except (serial.SerialException, OSError) as e:
+        print(f"  pyserial DTR/RTS fallback failed: {e}", file=sys.stderr)
+        return False
+
+    print("  Sent DTR=0/RTS=0 via pyserial fallback.")
+    return True
+
+
 def send_jump_to_app_control_transfer():
     """End-of-flash handshake: reproduce MaxmakeLAB's exact USB sequence
     so the bootloader sees the "we're done" signal it expects.
@@ -228,21 +296,32 @@ def send_jump_to_app_control_transfer():
     "flash complete, jump to app" regardless of actual endpoint state.
     """
     if not HAS_PYUSB:
-        print("  (pyusb not installed — falling back to pyserial DTR drop; "
-              "may not trigger jump-to-app)", file=sys.stderr)
+        print("  pyusb not installed; exact USB control transfer unavailable.",
+              file=sys.stderr)
         print("  To install: pip install --user pyusb", file=sys.stderr)
-        return
+        return False
 
-    dev = usb.core.find(idVendor=STM_VID, idProduct=STM_PID)
+    try:
+        dev = usb.core.find(idVendor=STM_VID, idProduct=STM_PID)
+    except usb.core.NoBackendError as e:
+        print(f"  pyusb has no USB backend: {e}", file=sys.stderr)
+        print("  On Windows, PyUSB also needs a libusb-compatible backend.",
+              file=sys.stderr)
+        return False
+    except usb.core.USBError as e:
+        print(f"  pyusb device lookup error: {e}", file=sys.stderr)
+        return False
+
     if dev is None:
         print("  (no USB device found via pyusb)", file=sys.stderr)
-        return
+        return False
 
     # The CDC interface contains both bulk data endpoints and is the
     # target for the class-specific control transfer.
     iface = 0
 
     was_kernel_claimed = False
+    control_transfer_sent = False
     try:
         if dev.is_kernel_driver_active(iface):
             dev.detach_kernel_driver(iface)
@@ -276,7 +355,8 @@ def send_jump_to_app_control_transfer():
             data_or_wLength=b"",
             timeout=1000,
         )
-    except usb.core.USBError as e:
+        control_transfer_sent = True
+    except (usb.core.USBError, usb.core.NoBackendError) as e:
         print(f"  pyusb control transfer error: {e}", file=sys.stderr)
     finally:
         usb.util.dispose_resources(dev)
@@ -285,6 +365,8 @@ def send_jump_to_app_control_transfer():
                 dev.attach_kernel_driver(iface)
             except usb.core.USBError:
                 pass
+
+    return control_transfer_sent
 
 
 def flash(port, firmware_path):
@@ -325,10 +407,17 @@ def flash(port, firmware_path):
     # transfer, not a pyserial DTR side-effect. Reproduce it verbatim
     # via pyusb so there's no ambiguity about what lands on the wire.
     print("→ Jump to app (explicit CDC SET_CONTROL_LINE_STATE 0x0000)")
-    send_jump_to_app_control_transfer()
+    jump_requested = send_jump_to_app_control_transfer()
+    if not jump_requested:
+        print("→ Jump to app fallback (pyserial DTR/RTS low)")
+        jump_requested = send_jump_to_app_serial_fallback(port)
     time.sleep(0.3)
 
-    print("✓ Flash complete. Device should re-enumerate running the new firmware.")
+    if jump_requested:
+        print("✓ Flash complete. Device should re-enumerate running the new firmware.")
+    else:
+        print("✓ Flash data written. Could not send jump-to-app request; "
+              "power-cycle the controller if it stays in bootloader mode.")
 
 
 def normalize_esp3d_base(host):

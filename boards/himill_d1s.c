@@ -26,6 +26,7 @@
 #include "grbl/motion_control.h"
 #include "grbl/state_machine.h"
 #include "grbl/nvs_buffer.h"
+#include "grbl/system.h"
 
 // HiMill stock bootloader lives at 0x08000000. It waits for a USB-CDC
 // handshake (0x51 0x05 0x0a) within a short window before jumping to
@@ -850,6 +851,30 @@ static bool mux_find_uart (io_stream_properties_t const *props, void *data)
 static bool button_pc4_prev_pressed = false;
 static bool button_pb1_prev_pressed = false;
 
+static bool himill_prepare_toolchange_button (sys_state_t state)
+{
+    if (state != STATE_TOOL_CHANGE || !gc_state.tool_change)
+        return true;
+
+#ifndef HIMILL_SKIP_MUX
+    // M6 first suspends stream input and waits for CMD_TOOL_ACK. Until that
+    // ack is processed, grblHAL has not installed the cycle-start trap that
+    // runs the toolsetter probe. If the sender disconnects before the ack is
+    // delivered, or the physical button lands before the ack path completes,
+    // a normal cycle-start would clear gc_state.tool_change and resume the
+    // job without probing.
+    if (hal.control.interrupt_callback == control_interrupt_handler) {
+        if (hal.stream.read != mux_read && mux_rt_handler) {
+            if (!mux_rt_handler(CMD_TOOL_ACK))
+                return false;
+        } else if (grbl.on_toolchange_ack)
+            grbl.on_toolchange_ack();
+    }
+#endif
+
+    return hal.control.interrupt_callback != control_interrupt_handler;
+}
+
 // [LASER_MODE:0|1] — mirror spindle PWM/enable to laser hardware.
 //
 // HiMill hardware has two PWM driver chips: PB8/PB9 (CNC spindle motor)
@@ -1013,7 +1038,8 @@ static void himill_poll_buttons (sys_state_t state)
     // FlexiHAL behavior of "physical CYCLE_START button confirms M6" only
     // works because that path uses the control-signal callback. Match it.
     bool pc4_pressed = !DIGITAL_IN(GPIOC, 4);
-    if (pc4_pressed && !button_pc4_prev_pressed && hal.control.interrupt_callback) {
+    if (pc4_pressed && !button_pc4_prev_pressed && hal.control.interrupt_callback
+            && himill_prepare_toolchange_button(state)) {
         control_signals_t signals = {0};
         signals.cycle_start = On;
         hal.control.interrupt_callback(signals);
@@ -1539,7 +1565,7 @@ static void on_report_options_himill (bool newopt)
         on_report_options(newopt);
 
     if (!newopt)
-        hal.stream.write("[PLUGIN:HIMILL_D1S v0.2]" ASCII_EOL);
+        hal.stream.write("[PLUGIN:HIMILL_D1S v0.3]" ASCII_EOL);
 }
 
 void board_init (void)
