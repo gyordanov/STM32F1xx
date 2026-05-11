@@ -102,6 +102,39 @@ CMD_FINAL  = 0x53  # partial last chunk
 ACK_PREFIX = 0xA2  # chunk ack first byte
 
 
+def _format_serial_sample(data):
+    text = "".join(chr(b) if 32 <= b <= 126 else "." for b in data)
+    return f"{data.hex()} ({text})"
+
+
+def handshake_failure_hint(reply, extra=b""):
+    sample = reply + extra
+    if not sample:
+        return ("No bytes were received from the bootloader. Check the port, "
+                "USB cable, and power, then power-cycle the controller and retry.")
+
+    if sample.startswith(b"<"):
+        return ("The reply looks like a grblHAL status report, for example "
+                "`<Idle|...>`. That means the controller is still running the "
+                "firmware app instead of the HiMill bootloader. Close gusender, "
+                "serial monitors, and anything else connected to the controller, "
+                "then power-cycle and retry flashing.")
+
+    if sample.startswith(b"GrblHAL") or sample.startswith(b"Grb"):
+        return ("The reply looks like a grblHAL startup banner, so the app "
+                "rebooted instead of staying in the bootloader. Close any active "
+                "sender/serial connection, power-cycle the controller, and retry.")
+
+    if sample.startswith(b"ok") or sample.startswith(b"error"):
+        return ("The reply looks like normal grblHAL command output, so the "
+                "controller is still in the firmware app. Close any active "
+                "sender/serial connection and retry flashing after a power-cycle.")
+
+    return ("The reply is not a known HiMill bootloader handshake. Make sure no "
+            "sender or serial monitor is connected, power-cycle the controller, "
+            "and retry.")
+
+
 def find_port():
     """Scan serial ports for the STMicroelectronics Virtual COM Port."""
     matches = [p for p in serial.tools.list_ports.comports()
@@ -147,9 +180,13 @@ def handshake(ser):
     reply = ser.read(HANDSHAKE_ACK_LEN)
     bootloader_version = HANDSHAKE_ACKS.get(reply)
     if bootloader_version is None:
+        time.sleep(0.05)
+        extra = ser.read(min(getattr(ser, "in_waiting", 0), 80))
         expected = " or ".join(ack.hex() for ack in HANDSHAKE_ACKS)
-        sys.exit(f"Handshake failed: expected {expected}, "
-                 f"got {reply.hex() or '(nothing)'}")
+        got = _format_serial_sample(reply + extra) if reply or extra else "(nothing)"
+        sys.exit("Handshake failed: expected "
+                 f"{expected}, got {got}\n"
+                 f"Hint: {handshake_failure_hint(reply, extra)}")
     print(f"  OK ({reply.hex()}, bootloader v{bootloader_version})")
     if bootloader_version == "1.2":
         print("  WARNING: bootloader v1.2 is known to be more vulnerable "
