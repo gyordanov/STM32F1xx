@@ -1,0 +1,72 @@
+diff --git a/protocol.c b/protocol.c
+index ad00169..3e1f53f 100644
+--- a/protocol.c
++++ b/protocol.c
+@@ -38,6 +38,10 @@
+ #define RT_QUEUE_SIZE 16 // must be a power of 2
+ #endif
+ 
++#ifndef NVS_SYNC_IDLE_DELAY_MS
++#define NVS_SYNC_IDLE_DELAY_MS 0
++#endif
++
+ // Define line flags. Includes comment type tracking and line overflow detection.
+ typedef union {
+     uint8_t value;
+@@ -56,6 +60,21 @@ static char line[LINE_BUFFER_SIZE]; // Line to be executed. Zero-terminated.
+ static char xcommand[LINE_BUFFER_SIZE];
+ static bool keep_rt_commands = false;
+ 
++#if NVSDATA_BUFFER_ENABLE && NVS_SYNC_IDLE_DELAY_MS
++static uint32_t nvs_sync_not_before = 0;
++
++static void nvs_sync_delay_from_stream (void)
++{
++    if(hal.get_elapsed_ticks)
++        nvs_sync_not_before = hal.get_elapsed_ticks() + NVS_SYNC_IDLE_DELAY_MS;
++}
++
++static bool nvs_sync_delay_elapsed (void)
++{
++    return !hal.get_elapsed_ticks || (int32_t)(hal.get_elapsed_ticks() - nvs_sync_not_before) >= 0;
++}
++#endif
++
+ static void protocol_exec_rt_suspend (sys_state_t state);
+ 
+ // add gcode to execute not originating from normal input stream
+@@ -209,6 +228,10 @@ bool protocol_main_loop (void)
+         // initial filtering by removing leading spaces and control characters.
+         while((c = hal.stream.read()) != SERIAL_NO_DATA) {
+ 
++#if NVSDATA_BUFFER_ENABLE && NVS_SYNC_IDLE_DELAY_MS
++            nvs_sync_delay_from_stream();
++#endif
++
+             if(c == ASCII_CAN) {
+ 
+                 eol = xcommand[0] = '\0';
+@@ -410,7 +433,11 @@ bool protocol_execute_realtime (void)
+             protocol_exec_rt_suspend(state);
+ 
+ #if NVSDATA_BUFFER_ENABLE
+-        if((state == STATE_IDLE || (state & (STATE_ALARM|STATE_ESTOP))) && settings_dirty.is_dirty && !gc_state.file_run)
++        if((state == STATE_IDLE || (state & (STATE_ALARM|STATE_ESTOP))) && settings_dirty.is_dirty && !gc_state.file_run
++#if NVS_SYNC_IDLE_DELAY_MS
++            && nvs_sync_delay_elapsed()
++#endif
++        )
+             nvs_buffer_sync_physical();
+ #endif
+     }
+@@ -424,6 +451,10 @@ FLASHMEM static void protocol_poll_cmd (void)
+ 
+     if((c = hal.stream.read()) != SERIAL_NO_DATA) {
+ 
++#if NVSDATA_BUFFER_ENABLE && NVS_SYNC_IDLE_DELAY_MS
++        nvs_sync_delay_from_stream();
++#endif
++
+         if ((c == '\n') || (c == '\r')) { // End of line reached
+             line[char_counter] = '\0';
+             gc_state.last_error = *line == '\0' ? Status_OK : (*line == '$' ? system_execute_line(line) : Status_SystemGClock);

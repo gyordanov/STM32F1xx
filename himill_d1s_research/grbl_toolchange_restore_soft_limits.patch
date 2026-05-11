@@ -1,0 +1,13 @@
+diff --git a/tool_change.c b/tool_change.c
+index 4235853..c11d692 100644
+--- a/tool_change.c
++++ b/tool_change.c
+@@ -156,6 +156,8 @@ FLASHMEM static bool restore (void)
+ 
+         if(!settings.flags.no_restore_position_after_M6) {
+             previous.values[plane.axis_linear] += gc_get_offset(plane.axis_linear, false);
++            if(sys.soft_limits.mask)
++                grbl.apply_travel_limits(previous.values, NULL, &sys.work_envelope);
+             mc_line(previous.values, &plan_data);
+         }
+     }
