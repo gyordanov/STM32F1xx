@@ -1,7 +1,7 @@
 # HiMill D1S grblHAL Research
 
 This folder collects everything learned during the bring-up of grblHAL on
-the HiMill D1S CNC controller (2026-04-24 → 2026-05-03). Use it as the
+the HiMill D1S CNC controller (2026-04-24 to 2026-05-12). Use it as the
 starting point for any future debugging session.
 
 ## Hardware in scope
@@ -33,6 +33,21 @@ starting point for any future debugging session.
   defaults for sender-side fallback when firmware is built with
   `NO_SETTINGS_DESCRIPTIONS`; keeps preprocessor-gated variants and
   `appliesTo` hints for normalized axis / repeated settings.
+
+## Read first when resuming
+
+- `our_findings/session_2026-05-28_sd_disconnect_and_bulk_output.md`:
+  SD-job disconnect policy todo, `$F<=` large-file network failure evidence,
+  mux/backpressure research notes, and test backlog.
+- `our_findings/session_2026-05-12_state_and_defaults.md`: current
+  branch state, push instructions, grbl patch convention, acceleration
+  defaults, and next likely tasks.
+- `our_findings/session_2026-05-10_to_11_stream_rgb_toolchange.md`:
+  D1S stability fixes for RGB/MPG stream safety, NVS sync delay,
+  bootloader handshake hints, toolchange ack, and soft-limit restore.
+- `our_findings/session_2026-04-30_to_05-03_pendant_defaults_chopper.md`:
+  UART4 SmartPendant bring-up, mux write-all trap, D1S coordinate
+  seeding, and `$451` TMC chopper setting.
 
 ## What works (current build state, 2026-05-03)
 
@@ -546,9 +561,9 @@ When resuming this work:
 1. Read this README first
 2. Check `our_findings/session_*.md` for chronological notes; the most
    recent (as of this writing) is
-   `session_2026-04-30_to_05-03_pendant_defaults_chopper.md` covering
-   the SmartPendant integration, NVS factory seeding, `$342` baked
-   default, and the `$451` TMC chopper-mode setting.
+   `session_2026-05-12_state_and_defaults.md` covering current branch
+   state, push instructions, grbl patch convention, acceleration
+   defaults, and next likely tasks.
 3. Run `pio run -e himill_d1s` to confirm a clean build
 4. Use `tools/himill_flash.py .pio/build/himill_d1s/firmware.bin` for normal
    USB bootloader flashing via `[BOOT]`

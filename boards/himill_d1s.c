@@ -1172,7 +1172,7 @@ static status_code_t himill_user_command (char *line)
             laser_pwm_init();
             laser_mode_active = true;
         }
-        hal.stream.write_all("[MSG:Laser mode ON]" ASCII_EOL);
+        hal.stream.write_all("[MSG:Laser ON]" ASCII_EOL);
         return Status_OK;
     }
     if (strcmp(line, "[LASER_MODE:0]") == 0) {
@@ -1180,7 +1180,7 @@ static status_code_t himill_user_command (char *line)
             laser_mode_active = false;
             laser_pwm_deinit();
         }
-        hal.stream.write_all("[MSG:Laser mode OFF]" ASCII_EOL);
+        hal.stream.write_all("[MSG:Laser OFF]" ASCII_EOL);
         return Status_OK;
     }
 
@@ -1204,7 +1204,7 @@ static status_code_t himill_user_command (char *line)
     }
 
     if (strcmp(line, "[DFU]") == 0) {
-        hal.stream.write_all("[MSG:Entering ROM DFU bootloader]" ASCII_EOL);
+        hal.stream.write_all("[MSG:DFU]" ASCII_EOL);
         if (hal.stream.get_tx_buffer_count) {
             while (hal.stream.get_tx_buffer_count())
                 ;
@@ -1253,11 +1253,15 @@ static void himill_stream_changed (stream_type_t type)
 #define HIMILL_PROFILE_FS_OPTIONS               3
 #define HIMILL_PROFILE_TOOLCHANGE_PROBE_DIST    65.0f
 
-#define HIMILL_SETTING_STEPPER_SPREADCYCLE 0x01
-#define HIMILL_SETTING_RGB_STATUS_ENABLE   0x02
+#define HIMILL_SETTINGS_MAGIC 0xD1
+
+#define HIMILL_SETTING_CLEAN_ENABLE          0x01
+#define HIMILL_SETTING_STEPPER_SPREADCYCLE   0x02
+#define HIMILL_SETTING_RGB_STATUS_ENABLE     0x04
+#define HIMILL_SETTINGS_DEFAULT_FLAGS        HIMILL_SETTING_STEPPER_SPREADCYCLE
 
 typedef struct {
-    bool enable;
+    uint8_t magic;
     uint8_t flags;
 } himill_settings_t;
 
@@ -1266,7 +1270,7 @@ static nvs_address_t himill_nvs_address;
 static on_tool_selected_ptr on_tool_selected;
 
 static const setting_group_detail_t himill_setting_groups[] = {
-    { Group_Root, Group_UserSettings, "HiMill D1S" }
+    { Group_Root, Group_UserSettings, "D1S" }
 };
 
 // PD2 = TMC STEPPER_MODE pin. HIGH = SpreadCycle, LOW = StealthChop.
@@ -1282,19 +1286,23 @@ static void apply_stepper_mode (bool spreadcycle)
 
 static void himill_settings_save (void)
 {
+    himill_settings.magic = HIMILL_SETTINGS_MAGIC;
     hal.nvs.memcpy_to_nvs(himill_nvs_address, (uint8_t *)&himill_settings, sizeof(himill_settings_t), true);
 }
 
 static status_code_t himill_set_clean (setting_id_t id, uint_fast16_t value)
 {
-    himill_settings.enable = !!value;
+    if (value)
+        himill_settings.flags |= HIMILL_SETTING_CLEAN_ENABLE;
+    else
+        himill_settings.flags &= ~HIMILL_SETTING_CLEAN_ENABLE;
     himill_settings_save();
     return Status_OK;
 }
 
 static uint32_t himill_get_clean (setting_id_t id)
 {
-    return himill_settings.enable ? 1 : 0;
+    return (himill_settings.flags & HIMILL_SETTING_CLEAN_ENABLE) ? 1 : 0;
 }
 
 static status_code_t himill_set_stepper_mode (setting_id_t id, uint_fast16_t value)
@@ -1332,8 +1340,8 @@ static uint32_t himill_get_rgb_status (setting_id_t id)
 #endif
 
 static const setting_detail_t himill_setting_detail[] = {
-    { Setting_UserDefined_0, Group_UserSettings, "Clean toolsetter before M6", NULL, Format_Bool, NULL, NULL, NULL, Setting_NonCoreFn, himill_set_clean, himill_get_clean, NULL },
-    { Setting_UserDefined_1, Group_UserSettings, "TMC chopper mode", NULL, Format_RadioButtons, "StealthChop,SpreadCycle", NULL, NULL, Setting_NonCoreFn, himill_set_stepper_mode, himill_get_stepper_mode, NULL },
+    { Setting_UserDefined_0, Group_UserSettings, "Clean", NULL, Format_Bool, NULL, NULL, NULL, Setting_NonCoreFn, himill_set_clean, himill_get_clean, NULL },
+    { Setting_UserDefined_1, Group_UserSettings, "TMC", NULL, Format_RadioButtons, "S,C", NULL, NULL, Setting_NonCoreFn, himill_set_stepper_mode, himill_get_stepper_mode, NULL },
 #if RGB_LED_ENABLE == 2
     { Setting_UserDefined_2, Group_UserSettings, "RGB", NULL, Format_Bool, NULL, NULL, NULL, Setting_NonCoreFn, himill_set_rgb_status, himill_get_rgb_status, NULL }
 #endif
@@ -1355,6 +1363,23 @@ static void himill_profile_update_soft_limits (void)
 static bool himill_profile_repair (void)
 {
     bool changed = false;
+
+    if (settings.steppers.dir_invert.mask != DEFAULT_DIR_SIGNALS_INVERT_MASK ||
+        settings.steppers.enable_invert.mask != DEFAULT_ENABLE_SIGNALS_INVERT_MASK) {
+        settings.steppers.dir_invert.mask = DEFAULT_DIR_SIGNALS_INVERT_MASK;
+        settings.steppers.enable_invert.mask = DEFAULT_ENABLE_SIGNALS_INVERT_MASK;
+        changed = true;
+    }
+
+    if (!settings.homing.flags.enabled) {
+        settings.homing.flags.enabled = On;
+        changed = true;
+    }
+
+    if (settings.homing.dir_mask.value != DEFAULT_HOMING_DIR_MASK) {
+        settings.homing.dir_mask.value = DEFAULT_HOMING_DIR_MASK;
+        changed = true;
+    }
 
     if (settings.status_report.mask != HIMILL_PROFILE_STATUS_REPORT_MASK) {
         settings.status_report.mask = HIMILL_PROFILE_STATUS_REPORT_MASK;
@@ -1478,8 +1503,8 @@ static void seed_himill_coord_defaults (void)
 
 static void himill_settings_restore (void)
 {
-    himill_settings.enable = false;
-    himill_settings.flags = HIMILL_SETTING_STEPPER_SPREADCYCLE; // default: SpreadCycle, RGB off
+    himill_settings.magic = HIMILL_SETTINGS_MAGIC;
+    himill_settings.flags = HIMILL_SETTINGS_DEFAULT_FLAGS; // default: SpreadCycle, RGB/tool-clean off
     himill_settings_save();
     apply_stepper_mode(!!(himill_settings.flags & HIMILL_SETTING_STEPPER_SPREADCYCLE));
 #if RGB_LED_ENABLE == 2
@@ -1491,8 +1516,11 @@ static void himill_settings_restore (void)
 
 static void himill_settings_load (void)
 {
-    if (hal.nvs.memcpy_from_nvs((uint8_t *)&himill_settings, himill_nvs_address, sizeof(himill_settings_t), true) != NVS_TransferResult_OK)
+    if (hal.nvs.memcpy_from_nvs((uint8_t *)&himill_settings, himill_nvs_address, sizeof(himill_settings_t), true) != NVS_TransferResult_OK ||
+        himill_settings.magic != HIMILL_SETTINGS_MAGIC) {
         himill_settings_restore();
+        himill_settings.magic = 0; // RAM-only marker for $I warning; NVS was repaired.
+    }
 
     apply_stepper_mode(!!(himill_settings.flags & HIMILL_SETTING_STEPPER_SPREADCYCLE));
 #if RGB_LED_ENABLE == 2
@@ -1518,7 +1546,7 @@ static void himill_clean_toolsetter (tool_data_t *tool)
     plan_line_data_t plan_data;
     float target[N_AXIS];
 
-    if (!himill_settings.enable)
+    if (!(himill_settings.flags & HIMILL_SETTING_CLEAN_ENABLE))
         goto chain;
     // Skip on first M6 of the session: no TLR yet ⇒ nothing has been cut
     // yet ⇒ no chips to blow off.
@@ -1564,8 +1592,12 @@ static void on_report_options_himill (bool newopt)
     if (on_report_options)
         on_report_options(newopt);
 
-    if (!newopt)
-        hal.stream.write("[PLUGIN:HIMILL_D1S v0.3]" ASCII_EOL);
+    if (!newopt) {
+        hal.stream.write("[PLUGIN:HIMILL_D1S v0.3");
+        if (himill_settings.magic != HIMILL_SETTINGS_MAGIC)
+            hal.stream.write(" ERR:SET");
+        hal.stream.write("]" ASCII_EOL);
+    }
 }
 
 void board_init (void)
