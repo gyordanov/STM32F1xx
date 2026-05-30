@@ -1593,7 +1593,7 @@ static void on_report_options_himill (bool newopt)
         on_report_options(newopt);
 
     if (!newopt) {
-        hal.stream.write("[PLUGIN:HIMILL_D1S v0.3");
+        hal.stream.write("[PLUGIN:HIMILL_D1S v0.4");
         if (himill_settings.magic != HIMILL_SETTINGS_MAGIC)
             hal.stream.write(" ERR:SET");
         hal.stream.write("]" ASCII_EOL);
