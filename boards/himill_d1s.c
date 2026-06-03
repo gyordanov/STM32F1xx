@@ -27,6 +27,10 @@
 #include "grbl/state_machine.h"
 #include "grbl/nvs_buffer.h"
 #include "grbl/system.h"
+#if FS_ENABLE & FS_SDCARD
+#include "grbl/stream_file.h"
+#include "sdcard/sdcard.h"
+#endif
 
 // HiMill stock bootloader lives at 0x08000000. It waits for a USB-CDC
 // handshake (0x51 0x05 0x0a) within a short window before jumping to
@@ -494,6 +498,10 @@ static enqueue_realtime_command_ptr mux_rt_handler = protocol_enqueue_realtime_c
 static const io_stream_t *mux_rt_owner = NULL;
 static bool mux_rt_owner_locked = false;
 static int32_t esp_tunnel_pending = SERIAL_NO_DATA;
+static bool esp_tunnel_json_seen = false;
+static uint8_t esp_tunnel_json_depth = 0;
+static bool esp_tunnel_json_in_string = false;
+static bool esp_tunnel_json_escape = false;
 // Tunnel window for [ESP*] command responses: while non-zero, UART2 RX is
 // owned exclusively by the himill_poll_buttons drainer that mirrors bytes
 // to USB CDC TX. mux_read suppresses its USB→UART fallback while this is
@@ -729,6 +737,12 @@ static void mux_write_all (const char *str)
     // off → ~0.5 Hz toggle loop (the alternating MPG:1/MPG:0 in /tmp/mpg6.txt).
     if (sys.mpg_mode && mpg_uart_stream && mpg_uart_stream->write)
         mpg_uart_stream->write(str);
+}
+
+static void mux_uart_write_direct (const char *str)
+{
+    if (mux_uart && mux_uart->write)
+        mux_uart->write(str);
 }
 
 static uint16_t mux_get_rx_buffer_count (void)
@@ -1006,6 +1020,54 @@ static inline void laser_pwm_mirror (void)
 // (esp_tunnel_until_ms is declared up at file scope so mux_read can see it.)
 #define ESP_TUNNEL_WINDOW_MS 20000
 
+static void esp_tunnel_reset_response_state (void)
+{
+    esp_tunnel_json_seen = false;
+    esp_tunnel_json_depth = 0;
+    esp_tunnel_json_in_string = false;
+    esp_tunnel_json_escape = false;
+}
+
+static bool esp_tunnel_note_response_byte (uint8_t c)
+{
+    if (esp_tunnel_json_in_string) {
+        if (esp_tunnel_json_escape) {
+            esp_tunnel_json_escape = false;
+        } else if (c == '\\') {
+            esp_tunnel_json_escape = true;
+        } else if (c == '"') {
+            esp_tunnel_json_in_string = false;
+        }
+        return false;
+    }
+
+    if (esp_tunnel_json_depth > 0 && c == '"') {
+        esp_tunnel_json_in_string = true;
+        return false;
+    }
+
+    if (c == '{') {
+        esp_tunnel_json_seen = true;
+        if (esp_tunnel_json_depth < UINT8_MAX)
+            esp_tunnel_json_depth++;
+        return false;
+    }
+
+    if (c == '}' && esp_tunnel_json_depth > 0) {
+        esp_tunnel_json_depth--;
+        return esp_tunnel_json_seen && esp_tunnel_json_depth == 0;
+    }
+
+    return false;
+}
+
+static void esp_tunnel_close (void)
+{
+    esp_tunnel_until_ms = 0;
+    esp_tunnel_pending = SERIAL_NO_DATA;
+    esp_tunnel_reset_response_state();
+}
+
 static void himill_poll_buttons (sys_state_t state)
 {
 #if MPG_ENABLE == 2 && !defined(HIMILL_SKIP_MUX)
@@ -1064,9 +1126,8 @@ static void himill_poll_buttons (sys_state_t state)
     // the command from. Bypasses mux_active so it works while DTR-mux is
     // pointed at USB.
     if (esp_tunnel_until_ms != 0) {
-        if (esp_tunnel_pending == SERIAL_NO_DATA
-                && (int32_t)(hal.get_elapsed_ticks() - esp_tunnel_until_ms) >= 0) {
-            esp_tunnel_until_ms = 0;
+        if ((int32_t)(hal.get_elapsed_ticks() - esp_tunnel_until_ms) >= 0) {
+            esp_tunnel_close();
         } else if (mux_uart && mux_uart->read && mux_usb && mux_usb->write_char) {
             for (uint16_t i = 0; i < 64; i++) {  // bounded per-tick drain
                 int32_t c = esp_tunnel_pending;
@@ -1074,9 +1135,13 @@ static void himill_poll_buttons (sys_state_t state)
                     c = mux_uart->read();
                 if (c == SERIAL_NO_DATA)
                     break;
-                if (mux_usb->write_char((uint8_t)c))
+                if (mux_usb->write_char((uint8_t)c)) {
                     esp_tunnel_pending = SERIAL_NO_DATA;
-                else {
+                    if (esp_tunnel_note_response_byte((uint8_t)c)) {
+                        esp_tunnel_close();
+                        break;
+                    }
+                } else {
                     esp_tunnel_pending = c;
                     break;
                 }
@@ -1143,6 +1208,35 @@ static void jump_to_bootloader (uint32_t base_addr)
 
 static status_code_t himill_user_command (char *line)
 {
+#if FS_ENABLE & FS_SDCARD
+    if (strcmp(line, "[D1S_SD_REQ]") == 0) {
+        if (mux_last_rx_owner != mux_uart)
+            return on_user_command ? on_user_command(line) : Status_Unhandled;
+
+        if (state_get() != STATE_IDLE)
+            mux_uart_write_direct("[D1S_SD_BUSY:state]" ASCII_EOL);
+        else if (stream_is_file())
+            mux_uart_write_direct("[D1S_SD_BUSY:file]" ASCII_EOL);
+        else if (!sdcard_release_to_external())
+            mux_uart_write_direct("[D1S_SD_BUSY:unmount]" ASCII_EOL);
+        else
+            mux_uart_write_direct("[D1S_SD_RDY]" ASCII_EOL);
+
+        return Status_OK;
+    }
+
+    if (strcmp(line, "[D1S_SD_DONE]") == 0) {
+        if (mux_last_rx_owner != mux_uart)
+            return on_user_command ? on_user_command(line) : Status_Unhandled;
+
+        if (!sdcard_reclaim_from_external())
+            mux_uart_write_direct("[MSG:D1S SD remount failed]" ASCII_EOL);
+        mux_uart_write_direct("[D1S_SD_ACK]" ASCII_EOL);
+
+        return Status_OK;
+    }
+#endif
+
     if (strncmp(line, "[ESP", 4) == 0) {
         // Direction-aware [ESP*] handling:
         //   - From USB CDC: user wants to talk to ESP3D (WiFi config etc.).
@@ -1156,6 +1250,7 @@ static status_code_t himill_user_command (char *line)
             mux_uart->write(line);
             mux_uart->write_char('\n');
             esp_tunnel_pending = SERIAL_NO_DATA;
+            esp_tunnel_reset_response_state();
             esp_tunnel_until_ms = hal.get_elapsed_ticks() + ESP_TUNNEL_WINDOW_MS;
         }
         return Status_OK;
