@@ -843,7 +843,7 @@ static bool mux_find_uart (io_stream_properties_t const *props, void *data)
 {
     if (props->type == StreamType_Serial && props->instance == 0
             && props->flags.claimable && !props->flags.claimed) {
-        mux_uart = props->claim(115200);  // matches ESP3D side
+        mux_uart = props->claim(250000);  // matches ESP3D side
         return true;
     }
     return false;
