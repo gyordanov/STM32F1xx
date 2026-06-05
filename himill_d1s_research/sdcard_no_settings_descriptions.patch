@@ -1,0 +1,28 @@
+diff --git i/macros.c w/macros.c
+index b98bf09..c971cf1 100644
+--- i/macros.c
++++ w/macros.c
+@@ -392,16 +392,23 @@ FLASHMEM void fs_macros_init (void)
+         { Setting_MacroATC_Options, Group_Toolchange, "Macro ATC options", NULL, Format_Bitfield, "Execute M6T0,Fail M6 if tc.macro not found", NULL, NULL, Setting_IsExtended, &settings.macro_atc_flags.value, NULL },
+     };
+ 
++#ifndef NO_SETTINGS_DESCRIPTIONS
+     PROGMEM static const setting_descr_t macro_settings_descr[] = {
+         { Setting_MacroATC_Options, "Options for ATC macros." }
+     };
++#endif
+ 
+     static setting_details_t macro_setting_details = {
+         .is_core = true,
+         .settings = macro_settings,
+         .n_settings = sizeof(macro_settings) / sizeof(setting_detail_t),
++#ifndef NO_SETTINGS_DESCRIPTIONS
+         .descriptions = macro_settings_descr,
+         .n_descriptions = sizeof(macro_settings_descr) / sizeof(setting_descr_t),
++#else
++        .descriptions = NULL,
++        .n_descriptions = 0,
++#endif
+         .restore = macro_settings_restore,
+         .save = settings_write_global
+     };

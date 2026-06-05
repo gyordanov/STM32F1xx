@@ -28,8 +28,13 @@
 #include "grbl/nvs_buffer.h"
 #include "grbl/system.h"
 #if FS_ENABLE & FS_SDCARD
+#include "ff.h"
+#include "diskio.h"
 #include "grbl/stream_file.h"
+#include "grbl/vfs.h"
 #include "sdcard/sdcard.h"
+
+extern uint32_t diskio_d1s_diagnostics (void);
 #endif
 
 // HiMill stock bootloader lives at 0x08000000. It waits for a USB-CDC
@@ -49,7 +54,7 @@
 #define HIMILL_BOOTFLAG_ADDR   ((volatile uint32_t *)0x2000BFF0UL)
 #define HIMILL_BOOTFLAG_MAGIC  0xFA0505F5UL
 #define HIMILL_D1S_PLUGIN_NAME    "HIMILL_D1S"
-#define HIMILL_D1S_PLUGIN_VERSION "0.5"
+#define HIMILL_D1S_PLUGIN_VERSION "0.6"
 
 // STM32F103's factory-burned ROM bootloader (System Memory region).
 // Speaks standard USB DFU → dfu-util works out of the box on any OS.
@@ -67,6 +72,7 @@ static on_report_options_ptr   on_report_options;
 static on_execute_realtime_ptr on_execute_realtime;
 static on_stream_changed_ptr   on_stream_changed;
 static on_report_handlers_init_ptr on_report_handlers_init;
+static on_realtime_report_ptr  on_realtime_report;
 static status_message_ptr      on_status_message;
 
 #if RGB_LED_ENABLE == 2
@@ -1222,8 +1228,11 @@ static bool himill_sd_reclaim_from_esp3d (void)
                 line[line_len] = '\0';
                 line_len = 0;
 
-                if(!strcmp(line, "[D1S_SD_ACK]"))
+                if(!strcmp(line, "[D1S_SD_ACK]")) {
+                    BYTE power = 0;
+                    disk_ioctl(0, CTRL_POWER, &power);
                     return true;
+                }
 
                 if(!strncmp(line, "[D1S_SD_BUSY", 12))
                     return false;
@@ -1247,6 +1256,643 @@ static status_code_t himill_sd_private_command_handled (void)
 {
     d1s_sd_suppress_status = true;
     return Status_OK;
+}
+
+#define D1S_UPLOAD_PATH_MAX 128
+#define D1S_UPLOAD_CHUNK_MAX 168
+#define D1S_UPLOAD_ACK_WINDOW 8
+
+typedef struct {
+    bool active;
+    vfs_file_t *file;
+    char path[D1S_UPLOAD_PATH_MAX];
+    uint32_t received;
+    uint32_t seq;
+    uint16_t crc;
+} d1s_upload_t;
+
+static d1s_upload_t d1s_upload = {0};
+
+static uint16_t d1s_crc16_update (uint16_t crc, const uint8_t *data, size_t len)
+{
+    while(len--) {
+        crc ^= (uint16_t)*data++;
+        for(uint_fast8_t i = 0; i < 8; i++)
+            crc = (crc >> 1) ^ (0xA001U & -(int16_t)(crc & 1));
+    }
+
+    return crc;
+}
+
+static void d1s_upload_send_line (const char *line)
+{
+    mux_uart_write_direct(line);
+    mux_uart_write_direct(ASCII_EOL);
+}
+
+static void d1s_upload_send_error (const char *reason)
+{
+    mux_uart_write_direct("[D1SU:ERR:");
+    mux_uart_write_direct(reason);
+    d1s_upload_send_line("]");
+}
+
+static void d1s_upload_send_error_code (const char *reason, int code)
+{
+    mux_uart_write_direct("[D1SU:ERR:");
+    mux_uart_write_direct(reason);
+    mux_uart_write_direct(":");
+    if(code < 0) {
+        mux_uart_write_direct("-");
+        code = -code;
+    }
+    mux_uart_write_direct(uitoa((uint32_t)code));
+    uint32_t diag = diskio_d1s_diagnostics();
+    if(diag) {
+        char hex[9];
+        for(int i = 7; i >= 0; i--) {
+            hex[i] = "0123456789ABCDEF"[diag & 0x0F];
+            diag >>= 4;
+        }
+        hex[8] = '\0';
+        mux_uart_write_direct(":");
+        mux_uart_write_direct(hex);
+    }
+    d1s_upload_send_line("]");
+}
+
+static void d1s_upload_close (bool remove_file)
+{
+    char path[D1S_UPLOAD_PATH_MAX];
+
+    strcpy(path, d1s_upload.path);
+    if(d1s_upload.file) {
+        vfs_close(d1s_upload.file);
+        d1s_upload.file = NULL;
+    }
+
+    if(remove_file && *path)
+        vfs_unlink(path);
+
+    memset(&d1s_upload, 0, sizeof(d1s_upload));
+    system_set_exec_state_flag(EXEC_STATUS_REPORT);
+}
+
+static bool d1s_upload_valid_path (const char *path)
+{
+    size_t len = strlen(path);
+
+    if(len < 2 || path[0] != '/' || len >= D1S_UPLOAD_PATH_MAX)
+        return false;
+
+    while(*path) {
+        if(*path == '[' || *path == ']' || *path == '|' || *path == ':' || *path == ASCII_CR || *path == ASCII_LF)
+            return false;
+        path++;
+    }
+
+    return true;
+}
+
+static bool d1s_upload_make_dirs (const char *path)
+{
+    char dir[D1S_UPLOAD_PATH_MAX];
+
+    strcpy(dir, path);
+    for(char *slash = dir + 1; *slash; slash++) {
+        if(*slash == '/') {
+            vfs_stat_t st;
+
+            *slash = '\0';
+            if(vfs_stat(dir, &st) != 0) {
+                if(vfs_mkdir(dir) != 0)
+                    return false;
+            } else if(!st.st_mode.directory)
+                return false;
+            *slash = '/';
+        }
+    }
+
+    return true;
+}
+
+static int d1s_hexval (char c)
+{
+    if(c >= '0' && c <= '9')
+        return c - '0';
+    if(c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if(c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+
+    return -1;
+}
+
+static bool d1s_parse_hex32 (const char *s, uint32_t *value)
+{
+    uint32_t v = 0;
+    uint_fast8_t digits = 0;
+
+    if(!s || *s == '\0')
+        return false;
+
+    while(*s) {
+        int n = d1s_hexval(*s++);
+
+        if(n < 0 || ++digits > 8)
+            return false;
+
+        v = (v << 4) | (uint32_t)n;
+    }
+
+    *value = v;
+
+    return true;
+}
+
+static void d1s_upload_send_data_ack (uint32_t seq)
+{
+    char hex[9];
+
+    for(int i = 7; i >= 0; i--) {
+        hex[i] = "0123456789ABCDEF"[seq & 0x0F];
+        seq >>= 4;
+    }
+    hex[8] = '\0';
+
+    mux_uart_write_direct("[D1SU:OK:D:");
+    mux_uart_write_direct(hex);
+    d1s_upload_send_line("]");
+}
+
+static bool d1s_upload_decode_hex (const char *hex, uint8_t *data, uint_fast16_t len)
+{
+    for(uint_fast16_t i = 0; i < len; i++) {
+        int hi = d1s_hexval(hex[i * 2]);
+        int lo = d1s_hexval(hex[i * 2 + 1]);
+
+        if(hi < 0 || lo < 0)
+            return false;
+
+        data[i] = (uint8_t)((hi << 4) | lo);
+    }
+
+    return hex[len * 2] == '\0';
+}
+
+static int d1s_b64val (char c)
+{
+    if(c >= 'A' && c <= 'Z')
+        return c - 'A';
+    if(c >= 'a' && c <= 'z')
+        return c - 'a' + 26;
+    if(c >= '0' && c <= '9')
+        return c - '0' + 52;
+    if(c == '+')
+        return 62;
+    if(c == '/')
+        return 63;
+    if(c == '=')
+        return -2;
+
+    return -1;
+}
+
+static bool d1s_upload_decode_base64 (const char *b64, uint8_t *data, uint_fast16_t len)
+{
+    size_t enc_len = strlen(b64);
+
+    if(enc_len != ((len + 2U) / 3U) * 4U)
+        return false;
+
+    uint_fast16_t out = 0;
+    for(size_t i = 0; i < enc_len; i += 4) {
+        int v0 = d1s_b64val(b64[i]);
+        int v1 = d1s_b64val(b64[i + 1]);
+        int v2 = d1s_b64val(b64[i + 2]);
+        int v3 = d1s_b64val(b64[i + 3]);
+
+        if(v0 < 0 || v1 < 0 || v2 == -1 || v3 == -1)
+            return false;
+
+        uint32_t triple = ((uint32_t)v0 << 18) | ((uint32_t)v1 << 12);
+
+        if(v2 >= 0)
+            triple |= (uint32_t)v2 << 6;
+        if(v3 >= 0)
+            triple |= (uint32_t)v3;
+
+        if(out < len)
+            data[out++] = (uint8_t)(triple >> 16);
+        if(v2 >= 0 && out < len)
+            data[out++] = (uint8_t)(triple >> 8);
+        if(v3 >= 0 && out < len)
+            data[out++] = (uint8_t)triple;
+
+        if((v2 < 0 || v3 < 0) && i + 4U != enc_len)
+            return false;
+    }
+
+    return out == len;
+}
+
+static bool d1s_upload_strip_command (char *line)
+{
+    size_t len = strlen(line);
+
+    if(len < 8 || line[len - 1] != ']')
+        return false;
+
+    line[len - 1] = '\0';
+
+    return true;
+}
+
+static char *d1s_upload_next_field (char **cursor)
+{
+    char *field = *cursor, *sep;
+
+    if(field == NULL)
+        return NULL;
+
+    sep = strchr(field, ':');
+    if(sep) {
+        *sep = '\0';
+        *cursor = sep + 1;
+    } else
+        *cursor = NULL;
+
+    return field;
+}
+
+static status_code_t d1s_upload_start (char *path)
+{
+    if(d1s_upload.active) {
+        d1s_upload_send_error("busy");
+        return himill_sd_private_command_handled();
+    }
+
+    if(state_get() != STATE_IDLE || himill_sd_job_active()) {
+        d1s_upload_send_error("state");
+        return himill_sd_private_command_handled();
+    }
+
+    if(!d1s_upload_valid_path(path)) {
+        d1s_upload_send_error("path");
+        return himill_sd_private_command_handled();
+    }
+
+    if(!sdcard_reclaim_from_external()) {
+        d1s_upload_send_error("mount");
+        return himill_sd_private_command_handled();
+    }
+
+    strcpy(d1s_upload.path, path);
+    if(!d1s_upload_make_dirs(d1s_upload.path)) {
+        d1s_upload_send_error_code("mkdir", vfs_errno);
+        memset(&d1s_upload, 0, sizeof(d1s_upload));
+        return himill_sd_private_command_handled();
+    }
+
+    vfs_unlink(d1s_upload.path);
+
+    d1s_upload.file = vfs_open(d1s_upload.path, "w");
+    if(!d1s_upload.file) {
+        d1s_upload_send_error_code("open", vfs_errno);
+        memset(&d1s_upload, 0, sizeof(d1s_upload));
+        return himill_sd_private_command_handled();
+    }
+
+    d1s_upload.active = true;
+    d1s_upload.crc = 0xFFFFU;
+    d1s_upload_send_line("[D1SU:OK:S]");
+    system_set_exec_state_flag(EXEC_STATUS_REPORT);
+
+    return himill_sd_private_command_handled();
+}
+
+static status_code_t d1s_upload_data (char *cursor, bool base64)
+{
+    uint8_t data[D1S_UPLOAD_CHUNK_MAX];
+    char *seq_s = d1s_upload_next_field(&cursor);
+    char *len_s = d1s_upload_next_field(&cursor);
+    char *crc_s = d1s_upload_next_field(&cursor);
+    char *payload = cursor;
+
+    if(!d1s_upload.active || !d1s_upload.file) {
+        d1s_upload_send_error("inactive");
+        return himill_sd_private_command_handled();
+    }
+
+    if(!seq_s || !len_s || !crc_s || !payload) {
+        d1s_upload_send_error("syntax");
+        d1s_upload_close(true);
+        return himill_sd_private_command_handled();
+    }
+
+    uint32_t seq, len, expected_crc;
+
+    if(!d1s_parse_hex32(seq_s, &seq) || !d1s_parse_hex32(len_s, &len) ||
+        !d1s_parse_hex32(crc_s, &expected_crc) ||
+        seq != d1s_upload.seq || len > D1S_UPLOAD_CHUNK_MAX ||
+        !(base64 ? d1s_upload_decode_base64(payload, data, (uint_fast16_t)len)
+                 : d1s_upload_decode_hex(payload, data, (uint_fast16_t)len))) {
+        d1s_upload_send_error("frame");
+        d1s_upload_close(true);
+        return himill_sd_private_command_handled();
+    }
+
+    if(d1s_crc16_update(0xFFFFU, data, len) != (uint16_t)expected_crc) {
+        d1s_upload_send_error("crc");
+        d1s_upload_close(true);
+        return himill_sd_private_command_handled();
+    }
+
+    if(vfs_write(data, len, 1, d1s_upload.file) != len) {
+        d1s_upload_send_error_code("write", vfs_errno);
+        d1s_upload_close(true);
+        return himill_sd_private_command_handled();
+    }
+
+    d1s_upload.crc = d1s_crc16_update(d1s_upload.crc, data, len);
+    d1s_upload.received += len;
+    d1s_upload.seq++;
+
+    if((d1s_upload.seq % D1S_UPLOAD_ACK_WINDOW) == 0)
+        d1s_upload_send_data_ack(seq);
+
+    return himill_sd_private_command_handled();
+}
+
+static status_code_t d1s_upload_end (char *cursor)
+{
+    char *size_s = d1s_upload_next_field(&cursor);
+    char *crc_s = cursor;
+
+    if(!d1s_upload.active || !d1s_upload.file || !size_s || !crc_s) {
+        d1s_upload_send_error("inactive");
+        d1s_upload_close(true);
+        return himill_sd_private_command_handled();
+    }
+
+    uint32_t expected_size, expected_crc;
+
+    if(!d1s_parse_hex32(size_s, &expected_size) || !d1s_parse_hex32(crc_s, &expected_crc)) {
+        d1s_upload_send_error("syntax");
+        d1s_upload_close(true);
+        return himill_sd_private_command_handled();
+    }
+
+    bool ok = expected_size == d1s_upload.received && (uint16_t)expected_crc == d1s_upload.crc;
+
+    vfs_close(d1s_upload.file);
+    d1s_upload.file = NULL;
+
+    if(ok)
+        d1s_upload_send_line("[D1SU:DONE]");
+    else {
+        vfs_unlink(d1s_upload.path);
+        d1s_upload_send_error("verify");
+    }
+
+    memset(&d1s_upload, 0, sizeof(d1s_upload));
+    system_set_exec_state_flag(EXEC_STATUS_REPORT);
+
+    return himill_sd_private_command_handled();
+}
+
+static status_code_t d1s_upload_abort (void)
+{
+    d1s_upload_close(true);
+    d1s_upload_send_line("[D1SU:OK:A]");
+
+    return himill_sd_private_command_handled();
+}
+
+static status_code_t d1s_upload_command (char *line)
+{
+    if(mux_last_rx_owner != mux_uart)
+        return on_user_command ? on_user_command(line) : Status_Unhandled;
+
+    if(!d1s_upload_strip_command(line)) {
+        d1s_upload_send_error("syntax");
+        return himill_sd_private_command_handled();
+    }
+
+    char *cursor = line + strlen("[D1SU:");
+    char *op = d1s_upload_next_field(&cursor);
+
+    if(!op) {
+        d1s_upload_send_error("syntax");
+        return himill_sd_private_command_handled();
+    }
+
+    switch(*op) {
+        case 'S':
+            if(cursor)
+                return d1s_upload_start(cursor);
+            d1s_upload_send_error("syntax");
+            return himill_sd_private_command_handled();
+
+        case 'D':
+            return d1s_upload_data(cursor, false);
+
+        case 'B':
+            return d1s_upload_data(cursor, true);
+
+        case 'E':
+            return d1s_upload_end(cursor);
+
+        case 'A':
+            return d1s_upload_abort();
+
+        default:
+            d1s_upload_send_error("op");
+            return himill_sd_private_command_handled();
+    }
+}
+
+static void d1s_proxy_send_done (void)
+{
+    mux_uart_write_direct("[D1SP:DONE:OK]" ASCII_EOL);
+}
+
+static void d1s_proxy_send_error (const char *reason)
+{
+    mux_uart_write_direct("[D1SP:ERR:");
+    mux_uart_write_direct(reason);
+    mux_uart_write_direct("]" ASCII_EOL);
+}
+
+static void d1s_proxy_write_u64 (uint64_t value)
+{
+    char buf[21];
+    uint_fast8_t i = sizeof(buf);
+
+    buf[--i] = '\0';
+    do {
+        buf[--i] = '0' + (value % 10U);
+        value /= 10U;
+    } while(value && i);
+
+    mux_uart_write_direct(&buf[i]);
+}
+
+static bool d1s_proxy_valid_path (const char *path)
+{
+    size_t len = strlen(path);
+
+    if(len == 0 || path[0] != '/' || len >= D1S_UPLOAD_PATH_MAX)
+        return false;
+
+    while(*path) {
+        if(*path == '[' || *path == ']' || *path == '|' || *path == ':' ||
+            *path == ASCII_CR || *path == ASCII_LF)
+            return false;
+        path++;
+    }
+
+    return true;
+}
+
+static bool d1s_proxy_sd_ready (void)
+{
+    if(d1s_upload.active || sdcard_is_released_to_external() ||
+        state_get() != STATE_IDLE || himill_sd_job_active()) {
+        d1s_proxy_send_error("busy");
+        return false;
+    }
+
+    if(!sdcard_reclaim_from_external()) {
+        d1s_proxy_send_error("mount");
+        return false;
+    }
+
+    return true;
+}
+
+static status_code_t d1s_proxy_list (const char *path)
+{
+    if(!d1s_proxy_valid_path(path)) {
+        d1s_proxy_send_error("path");
+        return himill_sd_private_command_handled();
+    }
+
+    if(!d1s_proxy_sd_ready())
+        return himill_sd_private_command_handled();
+
+    vfs_dir_t *dir = vfs_opendir(path);
+    if(!dir) {
+        d1s_proxy_send_error("open");
+        return himill_sd_private_command_handled();
+    }
+
+    vfs_dirent_t *dirent;
+    while((dirent = vfs_readdir(dir)) && *dirent->name) {
+        if(dirent->st_mode.hidden)
+            continue;
+
+        mux_uart_write_direct("[D1SP:FILE:");
+        mux_uart_write_direct(dirent->name);
+        mux_uart_write_direct("|SIZE:");
+        if(dirent->st_mode.directory)
+            mux_uart_write_direct("-1");
+        else
+            d1s_proxy_write_u64((uint64_t)dirent->size);
+        mux_uart_write_direct("]" ASCII_EOL);
+
+        grbl.on_execute_realtime(state_get());
+    }
+
+    vfs_closedir(dir);
+
+    vfs_free_t *free = vfs_fgetfree(path);
+    if(free) {
+        mux_uart_write_direct("[D1SP:STAT:");
+        d1s_proxy_write_u64(free->size);
+        mux_uart_write_direct(":");
+        d1s_proxy_write_u64(free->used);
+        mux_uart_write_direct("]" ASCII_EOL);
+    }
+
+    d1s_proxy_send_done();
+
+    return himill_sd_private_command_handled();
+}
+
+static status_code_t d1s_proxy_action (char op, const char *path)
+{
+    int res = -1;
+
+    if(!d1s_proxy_valid_path(path)) {
+        d1s_proxy_send_error("path");
+        return himill_sd_private_command_handled();
+    }
+
+    if(!d1s_proxy_sd_ready())
+        return himill_sd_private_command_handled();
+
+    switch(op) {
+        case 'D':
+            res = vfs_unlink(path);
+            break;
+        case 'M':
+            res = vfs_mkdir(path);
+            break;
+        case 'R':
+            res = vfs_rmdir(path);
+            break;
+    }
+
+    if(res == 0)
+        d1s_proxy_send_done();
+    else
+        d1s_proxy_send_error("fs");
+
+    return himill_sd_private_command_handled();
+}
+
+static status_code_t d1s_proxy_command (char *line)
+{
+    if(mux_last_rx_owner != mux_uart)
+        return on_user_command ? on_user_command(line) : Status_Unhandled;
+
+    if(!d1s_upload_strip_command(line)) {
+        d1s_proxy_send_error("syntax");
+        return himill_sd_private_command_handled();
+    }
+
+    char *cursor = line + strlen("[D1SP:");
+    char *op = d1s_upload_next_field(&cursor);
+
+    if(!op || !cursor) {
+        d1s_proxy_send_error("syntax");
+        return himill_sd_private_command_handled();
+    }
+
+    switch(*op) {
+        case 'L':
+            return d1s_proxy_list(cursor);
+        case 'D':
+        case 'M':
+        case 'R':
+            return d1s_proxy_action(*op, cursor);
+    }
+
+    d1s_proxy_send_error("op");
+    return himill_sd_private_command_handled();
+}
+
+static void himill_realtime_report (stream_write_ptr stream_write, report_tracking_flags_t report)
+{
+    if(d1s_upload.active) {
+        stream_write("|SDU:");
+        stream_write(uitoa(d1s_upload.received));
+    } else if(sdcard_is_released_to_external())
+        stream_write("|SDB:ESP3D");
+
+    if(on_realtime_report)
+        on_realtime_report(stream_write, report);
 }
 #endif
 
@@ -1306,6 +1952,12 @@ static void jump_to_bootloader (uint32_t base_addr)
 static status_code_t himill_user_command (char *line)
 {
 #if FS_ENABLE & FS_SDCARD
+    if (!strncmp(line, "[D1SU:", 6))
+        return d1s_upload_command(line);
+
+    if (!strncmp(line, "[D1SP:", 6))
+        return d1s_proxy_command(line);
+
     if (strcmp(line, "[D1S_SD_REQ]") == 0) {
         if (mux_last_rx_owner != mux_uart)
             return on_user_command ? on_user_command(line) : Status_Unhandled;
@@ -1333,10 +1985,13 @@ static status_code_t himill_user_command (char *line)
         if (mux_last_rx_owner != mux_uart)
             return on_user_command ? on_user_command(line) : Status_Unhandled;
 
-        // Compatibility path for older/per-request ESPD behaviour and
-        // request-timeout cleanup. Sticky ownership is reclaimed only when
-        // grblHAL actually starts an SD operation.
-        mux_uart_write_direct("[D1S_SD_ACK]" ASCII_EOL);
+        BYTE power = 0;
+        disk_ioctl(0, CTRL_POWER, &power);
+
+        if(sdcard_reclaim_from_external_done())
+            mux_uart_write_direct("[D1S_SD_ACK]" ASCII_EOL);
+        else
+            mux_uart_write_direct("[D1S_SD_BUSY:mount]" ASCII_EOL);
 
         return himill_sd_private_command_handled();
     }
@@ -1828,6 +2483,11 @@ void board_init (void)
 
     on_report_options       = grbl.on_report_options;
     grbl.on_report_options  = on_report_options_himill;
+
+#if FS_ENABLE & FS_SDCARD
+    on_realtime_report      = grbl.on_realtime_report;
+    grbl.on_realtime_report = himill_realtime_report;
+#endif
 
     on_execute_realtime     = grbl.on_execute_realtime;
     grbl.on_execute_realtime = himill_poll_buttons;

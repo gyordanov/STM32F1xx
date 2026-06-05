@@ -1,0 +1,166 @@
+diff --git i/fs_fatfs.c w/fs_fatfs.c
+index 851b283..f1ccf70 100644
+--- i/fs_fatfs.c
++++ w/fs_fatfs.c
+@@ -282,6 +282,13 @@ FLASHMEM static int fs_stat (const char *filename, vfs_stat_t *st)
+     }
+ 
+     if(vfs_errno == 0) {
++#ifdef FATFS_NO_MTIME
++#ifdef ESP_PLATFORM
++        st->st_mtim = (time_t)0;
++#else
++        st->st_mtime = (time_t)0;
++#endif
++#else
+         struct tm tm  = {
+             .tm_sec  = (f.ftime & 0x1f) << 1,
+             .tm_min  = (f.ftime >> 5) & 0x3f,
+@@ -294,6 +301,7 @@ FLASHMEM static int fs_stat (const char *filename, vfs_stat_t *st)
+         st->st_mtim = mktime(&tm);
+ #else
+         st->st_mtime = mktime(&tm);
++#endif
+ #endif
+     }
+ 
+diff --git i/fs_stream.c w/fs_stream.c
+index 6f4cc74..736bb2d 100644
+--- i/fs_stream.c
++++ w/fs_stream.c
+@@ -93,7 +93,7 @@ static struct {
+     vfs_st_mode_t mode;
+ } fs = {};
+ 
+-static bool frewind = false, webui = false;
++static bool frewind = false;
+ static io_stream_t active_stream;
+ static driver_reset_ptr driver_reset = NULL;
+ static on_realtime_report_ptr on_realtime_report;
+@@ -119,7 +119,7 @@ static void onProgramCompleted (program_flow_t program_flow, bool check_mode);
+ #if FS_ENABLE & FS_SDCARD
+ FLASHMEM static status_code_t reclaim_sdcard_if_external (void)
+ {
+-    if(sdcard_is_released_to_external() && !sdcard_reclaim_from_external()) {
++    if(sdcard_is_released_to_external()) {
+         report_message("SD card owned externally", Message_Warning);
+         return Status_SDNotMounted;
+     }
+@@ -351,7 +351,7 @@ FLASHMEM static void stream_end_job (bool flush)
+     if(flush)                                                           // Flush input buffer?
+         hal.stream.reset_read_buffer();                                 // Yes, do it.
+ 
+-    webui = frewind = false;
++    frewind = false;
+ 
+     if(grbl.on_stream_changed)
+         grbl.on_stream_changed(hal.stream.type);
+@@ -550,24 +550,22 @@ FLASHMEM static void stream_changed (stream_type_t type)
+ {
+     if(type != StreamType_File && file.handle != NULL) {
+ 
+-        // Reconnect from WebUI?
+-        if(webui && (type != StreamType_WebSocket || hal.stream.state.webui_connected)) {
+-            active_stream.set_enqueue_rt_handler(enqueue_realtime_command); // Restore previous real time handler,
+-            memcpy(&active_stream, &hal.stream, sizeof(io_stream_t));       // save current stream pointers
+-            hal.stream.read = read_redirected;                              // then redirect to read from file instead
+-            stream_set_type(StreamType_File, file.handle);                  // ...
+-
+-            if(hal.stream.suspend_read)                                     // If active stream support tool change suspend
+-                hal.stream.suspend_read = stream_suspend;                   // then we do as well
+-            else                                                            //
+-                hal.stream.suspend_read = NULL;                             // else not
+-
+-            if(type == StreamType_WebSocket)                                                        // If WebUI came back online
+-                enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(drop_input_stream);    // restore normal operation
+-            else                                                                                    // else
+-                enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(check_input_stream);   // check for stream takeover
+-        } else // Terminate job.
+-            task_add_immediate(terminate_job, NULL);
++        // Keep SD jobs running if the sender disconnects. Rebind to the
++        // current stream for realtime commands while file input remains active.
++        active_stream.set_enqueue_rt_handler(enqueue_realtime_command); // Restore previous real time handler,
++        memcpy(&active_stream, &hal.stream, sizeof(io_stream_t));       // save current stream pointers
++        hal.stream.read = read_redirected;                              // then redirect to read from file instead
++        stream_set_type(StreamType_File, file.handle);                  // ...
++
++        if(hal.stream.suspend_read)                                     // If active stream support tool change suspend
++            hal.stream.suspend_read = stream_suspend;                   // then we do as well
++        else                                                            //
++            hal.stream.suspend_read = NULL;                             // else not
++
++        if(type == StreamType_WebSocket)                                                        // If WebSocket is active
++            enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(drop_input_stream);    // restore normal operation
++        else                                                                                    // else
++            enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(check_input_stream);   // check for stream takeover
+     }
+ 
+     if(on_stream_changed)
+@@ -596,8 +594,6 @@ FLASHMEM status_code_t stream_file (sys_state_t state, char *fname)
+ 
+             gc_state.last_error = Status_OK;            // Start with no errors
+             grbl.report.status_message(Status_OK);      // and confirm command to originator.
+-            webui = hal.stream.state.webui_connected;   // Did WebUI start this job?
+-
+             if(!(grbl.on_file_open && (retval = grbl.on_file_open(fname, file.handle, true)) == Status_OK)) {
+ 
+                 memcpy(&active_stream, &hal.stream, sizeof(io_stream_t));   // Save current stream pointers
+diff --git i/macros.c w/macros.c
+index b98bf09..c971cf1 100644
+--- i/macros.c
++++ w/macros.c
+@@ -392,16 +392,23 @@ FLASHMEM void fs_macros_init (void)
+         { Setting_MacroATC_Options, Group_Toolchange, "Macro ATC options", NULL, Format_Bitfield, "Execute M6T0,Fail M6 if tc.macro not found", NULL, NULL, Setting_IsExtended, &settings.macro_atc_flags.value, NULL },
+     };
+ 
++#ifndef NO_SETTINGS_DESCRIPTIONS
+     PROGMEM static const setting_descr_t macro_settings_descr[] = {
+         { Setting_MacroATC_Options, "Options for ATC macros." }
+     };
++#endif
+ 
+     static setting_details_t macro_setting_details = {
+         .is_core = true,
+         .settings = macro_settings,
+         .n_settings = sizeof(macro_settings) / sizeof(setting_detail_t),
++#ifndef NO_SETTINGS_DESCRIPTIONS
+         .descriptions = macro_settings_descr,
+         .n_descriptions = sizeof(macro_settings_descr) / sizeof(setting_descr_t),
++#else
++        .descriptions = NULL,
++        .n_descriptions = 0,
++#endif
+         .restore = macro_settings_restore,
+         .save = settings_write_global
+     };
+diff --git i/sdcard.c w/sdcard.c
+index e256028..c18c9ec 100644
+--- i/sdcard.c
++++ w/sdcard.c
+@@ -177,6 +177,14 @@ FLASHMEM bool sdcard_reclaim_from_external (void)
+     return sdcard_mount();
+ }
+ 
++FLASHMEM bool sdcard_reclaim_from_external_done (void)
++{
++    if(released_to_external)
++        released_to_external = false;
++
++    return sdcard_mount();
++}
++
+ FLASHMEM bool sdcard_is_released_to_external (void)
+ {
+     return released_to_external;
+diff --git i/sdcard.h w/sdcard.h
+index 2083e34..b6a8420 100644
+--- i/sdcard.h
++++ w/sdcard.h
+@@ -67,6 +67,7 @@ void sdcard_early_mount (void);
+ void sdcard_set_reclaim_callback (on_reclaim_ptr on_reclaim);
+ bool sdcard_release_to_external (void);
+ bool sdcard_reclaim_from_external (void);
++bool sdcard_reclaim_from_external_done (void);
+ bool sdcard_is_released_to_external (void);
+ 
+ #endif // FS_ENABLE & FS_SDCARD

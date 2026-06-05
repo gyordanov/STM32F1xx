@@ -1,0 +1,440 @@
+diff --git a/gcode.c b/gcode.c
+index bda6249..7621dbe 100644
+--- a/gcode.c
++++ b/gcode.c
+@@ -314,6 +314,102 @@ inline static float gc_get_block_offset (parser_block_t *gc_block, uint_fast8_t
+     return gc_block->modal.g5x_offset.data.coord.values[idx] + gc_state.g92_offset.coord.values[idx] + gc_state.modal.tool_length_offset[idx];
+ }
+ 
++#ifdef ROTATION_ENABLE
++
++inline static bool gc_xy_rotation_active (coord_system_data_t *offset)
++{
++    return offset->rotation != 0.0f;
++}
++
++inline static plane_t gc_xy_rotation_plane (void)
++{
++    return (plane_t){ .axis_0 = X_AXIS, .axis_1 = Y_AXIS, .axis_linear = Z_AXIS };
++}
++
++static void gc_machine_to_work (coord_data_t *target, coord_system_data_t *offset)
++{
++    uint_fast8_t idx = N_AXIS;
++
++    do {
++        idx--;
++        target->values[idx] -= offset->coord.values[idx] + gc_state.g92_offset.coord.values[idx] + gc_state.modal.tool_length_offset[idx];
++    } while(idx);
++
++    if(gc_xy_rotation_active(offset))
++        rotate(target, gc_xy_rotation_plane(), -offset->rotation);
++}
++
++static void gc_work_to_machine (coord_data_t *target, coord_system_data_t *offset)
++{
++    uint_fast8_t idx = N_AXIS;
++
++    if(gc_xy_rotation_active(offset))
++        rotate(target, gc_xy_rotation_plane(), offset->rotation);
++
++    do {
++        idx--;
++        target->values[idx] += offset->coord.values[idx] + gc_state.g92_offset.coord.values[idx] + gc_state.modal.tool_length_offset[idx];
++    } while(idx);
++}
++
++static void gc_current_work_position (coord_data_t *target, coord_system_data_t *offset)
++{
++    memcpy(target, gc_state.position, sizeof(coord_data_t));
++    gc_machine_to_work(target, offset);
++}
++
++static void gc_solve_wcs_origin_from_work (coord_data_t *origin, coord_data_t *machine, coord_data_t *work, coord_system_data_t *offset)
++{
++    coord_data_t rotated_work;
++    uint_fast8_t idx = N_AXIS;
++
++    memcpy(&rotated_work, work, sizeof(coord_data_t));
++
++    if(gc_xy_rotation_active(offset))
++        rotate(&rotated_work, gc_xy_rotation_plane(), offset->rotation);
++
++    do {
++        idx--;
++        origin->values[idx] = machine->values[idx] - gc_state.g92_offset.coord.values[idx] - gc_state.modal.tool_length_offset[idx] - rotated_work.values[idx];
++    } while(idx);
++}
++
++static void gc_solve_g92_from_work (coord_data_t *g92, coord_data_t *machine, coord_data_t *work, coord_system_data_t *offset)
++{
++    coord_data_t rotated_work;
++    uint_fast8_t idx = N_AXIS;
++
++    memcpy(&rotated_work, work, sizeof(coord_data_t));
++
++    if(gc_xy_rotation_active(offset))
++        rotate(&rotated_work, gc_xy_rotation_plane(), offset->rotation);
++
++    do {
++        idx--;
++        g92->values[idx] = machine->values[idx] - offset->coord.values[idx] - gc_state.modal.tool_length_offset[idx] - rotated_work.values[idx];
++    } while(idx);
++}
++
++#endif
++
++void gc_get_work_position (float *position, const float *machine_position, bool real_time)
++{
++    coord_data_t wpos;
++    uint_fast8_t idx = N_AXIS;
++
++    do {
++        idx--;
++        wpos.values[idx] = machine_position[idx] - gc_get_offset(idx, real_time);
++    } while(idx);
++
++#ifdef ROTATION_ENABLE
++    if(gc_xy_rotation_active(&gc_state.modal.g5x_offset.data))
++        rotate(&wpos, gc_xy_rotation_plane(), -gc_state.modal.g5x_offset.data.rotation);
++#endif
++
++    memcpy(position, wpos.values, sizeof(coord_data_t));
++}
++
+ FLASHMEM void gc_set_tool_offset (tool_offset_mode_t mode, uint_fast8_t idx, int32_t offset)
+ {
+     bool tlo_changed = false;
+@@ -1216,16 +1312,6 @@ status_code_t gc_execute_block (char *block)
+ 
+ #endif // NGC_EXPRESSIONS_ENABLE
+ 
+-#ifdef ROTATION_ENABLE
+-
+-    PROGMEM static const axes_signals_t rotate_axes[] = {
+-        { .x = On, .y = On },
+-        { .x = On, .z = On },
+-        { .y = On, .z = On }
+-    };
+-
+-#endif
+-
+     char *message = NULL;
+     status_code_t status = Status_OK;
+     struct {
+@@ -2943,18 +3029,46 @@ status_code_t gc_execute_block (char *block)
+   #endif
+ #endif
+                     // Pre-calculate the coordinate data changes.
+-                    idx = N_AXIS;
+-                    do { // Axes indices are consistent, so loop may be used.
+-                        // Update axes defined only in block. Always in machine coordinates. Can change non-active system.
+-                        if(bit_istrue(axis_words.mask, bit(--idx))) {
+-                            if(gc_block.values.l == 20)
+-                                // L20: Update coordinate system axis at current position (with modifiers) with programmed value
+-                                // WPos = MPos - WCS - G92 - TLO  ->  WCS = MPos - G92 - TLO - WPos
+-                                coord_system.data.coord.values[idx] = gc_state.position[idx] - gc_block.values.xyz[idx] - gc_state.g92_offset.coord.values[idx] - gc_state.modal.tool_length_offset[idx];
+-                            else // L2: Update coordinate system axis to programmed value.
+-                                coord_system.data.coord.values[idx] = gc_block.values.xyz[idx];
+-                        } // else, keep current stored value.
+-                    } while(idx);
++#ifdef ROTATION_ENABLE
++                    if(gc_block.values.l == 20 && gc_xy_rotation_active(&coord_system.data)) {
++                        coord_data_t machine_position, requested_work, origin;
++                        axes_signals_t update_axes = axis_words;
++
++                        memcpy(&machine_position, gc_state.position, sizeof(coord_data_t));
++                        gc_current_work_position(&requested_work, &coord_system.data);
++
++                        idx = N_AXIS;
++                        do {
++                            if(bit_istrue(axis_words.mask, bit(--idx)))
++                                requested_work.values[idx] = gc_block.values.xyz[idx];
++                        } while(idx);
++
++                        gc_solve_wcs_origin_from_work(&origin, &machine_position, &requested_work, &coord_system.data);
++
++                        if(axis_words.x || axis_words.y)
++                            update_axes.x = update_axes.y = On;
++
++                        idx = N_AXIS;
++                        do {
++                            if(bit_istrue(update_axes.mask, bit(--idx)))
++                                coord_system.data.coord.values[idx] = origin.values[idx];
++                        } while(idx);
++                    } else
++#endif
++                    {
++                        idx = N_AXIS;
++                        do { // Axes indices are consistent, so loop may be used.
++                            // Update axes defined only in block. Always in machine coordinates. Can change non-active system.
++                            if(bit_istrue(axis_words.mask, bit(--idx))) {
++                                if(gc_block.values.l == 20)
++                                    // L20: Update coordinate system axis at current position (with modifiers) with programmed value
++                                    // WPos = MPos - WCS - G92 - TLO  ->  WCS = MPos - G92 - TLO - WPos
++                                    coord_system.data.coord.values[idx] = gc_state.position[idx] - gc_block.values.xyz[idx] - gc_state.g92_offset.coord.values[idx] - gc_state.modal.tool_length_offset[idx];
++                                else // L2: Update coordinate system axis to programmed value.
++                                    coord_system.data.coord.values[idx] = gc_block.values.xyz[idx];
++                            } // else, keep current stored value.
++                        } while(idx);
++                    }
+                     break;
+ #ifdef __GNUC__
+ #pragma GCC diagnostic pop
+@@ -3018,16 +3132,46 @@ status_code_t gc_execute_block (char *block)
+             if (!axis_words.mask)
+                 RETURN(Status_GcodeNoAxisWords); // [No axis words]
+ 
+-            // Update axes defined only in block. Offsets current system to defined value. Does not update when
+-            // active coordinate system is selected, but is still active unless G92.1 disables it.
+-            idx = N_AXIS;
+-            do { // Axes indices are consistent, so loop may be used.
+-                if(bit_istrue(axis_words.mask, bit(--idx))) {
+-            // WPos = MPos - WCS - G92 - TLO  ->  G92 = MPos - WCS - TLO - WPos
+-                    gc_block.values.xyz[idx] = gc_state.position[idx] - gc_block.modal.g5x_offset.data.coord.values[idx] - gc_block.values.xyz[idx] - gc_state.modal.tool_length_offset[idx];
+-                } else
+-                    gc_block.values.xyz[idx] = gc_state.g92_offset.coord.values[idx];
+-            } while(idx);
++#ifdef ROTATION_ENABLE
++            if(gc_xy_rotation_active(&gc_block.modal.g5x_offset.data)) {
++                coord_data_t machine_position, requested_work, g92_offset;
++                axes_signals_t update_axes = axis_words;
++
++                memcpy(&machine_position, gc_state.position, sizeof(coord_data_t));
++                gc_current_work_position(&requested_work, &gc_block.modal.g5x_offset.data);
++
++                idx = N_AXIS;
++                do {
++                    if(bit_istrue(axis_words.mask, bit(--idx)))
++                        requested_work.values[idx] = gc_block.values.xyz[idx];
++                } while(idx);
++
++                gc_solve_g92_from_work(&g92_offset, &machine_position, &requested_work, &gc_block.modal.g5x_offset.data);
++
++                if(axis_words.x || axis_words.y)
++                    update_axes.x = update_axes.y = On;
++
++                idx = N_AXIS;
++                do {
++                    idx--;
++                    gc_block.values.xyz[idx] = bit_istrue(update_axes.mask, bit(idx))
++                                                 ? g92_offset.values[idx]
++                                                 : gc_state.g92_offset.coord.values[idx];
++                } while(idx);
++            } else
++#endif
++            {
++                // Update axes defined only in block. Offsets current system to defined value. Does not update when
++                // active coordinate system is selected, but is still active unless G92.1 disables it.
++                idx = N_AXIS;
++                do { // Axes indices are consistent, so loop may be used.
++                    if(bit_istrue(axis_words.mask, bit(--idx))) {
++                // WPos = MPos - WCS - G92 - TLO  ->  G92 = MPos - WCS - TLO - WPos
++                        gc_block.values.xyz[idx] = gc_state.position[idx] - gc_block.modal.g5x_offset.data.coord.values[idx] - gc_block.values.xyz[idx] - gc_state.modal.tool_length_offset[idx];
++                    } else
++                        gc_block.values.xyz[idx] = gc_state.g92_offset.coord.values[idx];
++                } while(idx);
++            }
+             break;
+             
+ #if ENABLE_ACCELERATION_PROFILES
+@@ -3051,64 +3195,64 @@ status_code_t gc_execute_block (char *block)
+             if((axis_words.mask || gc_block.modal.motion == MotionMode_CwArc || gc_block.modal.motion == MotionMode_CcwArc) && axis_command != AxisCommand_ToolLengthOffset) { // TLO block any axis command.
+ 
+ #ifdef ROTATION_ENABLE
+-                axes_signals_t r_axes, r_around;
+-                uint_fast8_t idx_0, idx_1;
+-                if(!gc_parser_flags.jog_motion && (r_axes.mask = (gc_block.modal.g5x_offset.data.rotation == 0.0f ? 0 : (axis_words.mask & (r_around.mask = rotate_axes[gc_block.modal.plane_select].mask))))) {
+-
+-                    if(r_axes.mask != r_around.mask) {
+-                        point_3d_t pos;
+-                        memcpy(&pos, gc_state.position, sizeof(point_3d_t));
+-                        idx_0 = ffs(r_axes.mask) - 1;
+-                        idx_1 = ffs((r_axes.mask ^ r_around.mask) & r_around.mask) - 1;
+-                        pos.values[idx_0] -= (gc_state.g92_offset.coord.values[idx_0] + gc_state.modal.tool_length_offset[idx_0]);
+-                        pos.values[idx_1] -= (gc_state.g92_offset.coord.values[idx_1] + gc_state.modal.tool_length_offset[idx_1]);
+-                        rotate((coord_data_t *)&pos, plane, -gc_block.modal.g5x_offset.data.rotation);
+-                        gc_block.values.xyz[idx_1] = pos.values[idx_1] - gc_block.modal.g5x_offset.data.coord.values[idx_1];
+-                        axis_words.mask |= r_around.mask;
+-                    } else {
+-                        idx_0 = ffs(r_around.mask) - 1;
+-                        bit_false(r_around.mask, bit(idx));
+-                        idx_1 = ffs(r_around.mask) - 1;
+-                    }
++                if(gc_xy_rotation_active(&gc_block.modal.g5x_offset.data) &&
++                    gc_block.non_modal_command != NonModal_AbsoluteOverride) {
+ 
+-                    gc_block.values.xyz[plane.axis_0] += gc_block.modal.g5x_offset.data.coord.values[plane.axis_0];
+-                    gc_block.values.xyz[plane.axis_1] += gc_block.modal.g5x_offset.data.coord.values[plane.axis_1];
++                    coord_data_t target;
+ 
+-                    rotate((coord_data_t *)gc_block.values.xyz, plane, gc_block.modal.g5x_offset.data.rotation);
+-                }
++                    gc_current_work_position(&target, &gc_block.modal.g5x_offset.data);
++
++                    idx = N_AXIS;
++                    do {
++                        if(bit_istrue(axis_words.mask, bit(--idx))) {
++#if LATHE_UVW_OPTION
++  #if N_AXIS > 3
++                            if(idx <= Z_AXIS && bit_istrue(gc_block.words.mask, bit(idx + 21))) {
++  #else
++                            if(bit_istrue(gc_block.words.mask, bit(idx + 21))) {
++  #endif
++                                bit_false(gc_block.words.mask, bit(idx + 21));
++                                target.values[idx] += gc_block.values.uvw[idx];
++                            } else
+ #endif
++                            if(gc_block.modal.distance_incremental)
++                                target.values[idx] += gc_block.values.xyz[idx];
++                            else
++                                target.values[idx] = gc_block.values.xyz[idx];
++                        }
++                    } while(idx);
+ 
+-                idx = N_AXIS;
++                    gc_work_to_machine(&target, &gc_block.modal.g5x_offset.data);
++                    memcpy(gc_block.values.xyz, target.values, sizeof(coord_data_t));
++                } else
++#endif
++                {
++                    idx = N_AXIS;
+ 
+-                do { // Axes indices are consistent, so loop may be used to save flash space.
+-                    if(bit_isfalse(axis_words.mask, bit(--idx)))
+-                        gc_block.values.xyz[idx] = gc_state.position[idx]; // No axis word in block. Keep same axis position.
+-                    else if(gc_block.non_modal_command != NonModal_AbsoluteOverride) {
+-                        // Update specified value according to distance mode or ignore if absolute override is active.
+-                        // NOTE: G53 is never active with G28/30 since they are in the same modal group.
+-                        // Apply coordinate offsets based on distance mode.
++                    do { // Axes indices are consistent, so loop may be used to save flash space.
++                        if(bit_isfalse(axis_words.mask, bit(--idx)))
++                            gc_block.values.xyz[idx] = gc_state.position[idx]; // No axis word in block. Keep same axis position.
++                        else if(gc_block.non_modal_command != NonModal_AbsoluteOverride) {
++                            // Update specified value according to distance mode or ignore if absolute override is active.
++                            // NOTE: G53 is never active with G28/30 since they are in the same modal group.
++                            // Apply coordinate offsets based on distance mode.
+ #if LATHE_UVW_OPTION
+   #if N_AXIS > 3
+-                        if(idx <= Z_AXIS && bit_istrue(axis_words.mask, bit(idx)) && bit_istrue(gc_block.words.mask, bit(idx + 21))) {
++                            if(idx <= Z_AXIS && bit_istrue(axis_words.mask, bit(idx)) && bit_istrue(gc_block.words.mask, bit(idx + 21))) {
+   #else
+-                        if(bit_istrue(axis_words.mask, bit(idx)) && bit_istrue(gc_block.words.mask, bit(idx + 21))) {
++                            if(bit_istrue(axis_words.mask, bit(idx)) && bit_istrue(gc_block.words.mask, bit(idx + 21))) {
+   #endif
+-                            bit_false(gc_block.words.mask, bit(idx + 21));
+-                            gc_block.values.xyz[idx] = gc_state.position[idx] + gc_block.values.uvw[idx];
+-                        } else
++                                bit_false(gc_block.words.mask, bit(idx + 21));
++                                gc_block.values.xyz[idx] = gc_state.position[idx] + gc_block.values.uvw[idx];
++                            } else
+ #endif
+-                        if(gc_block.modal.distance_incremental)
+-                            gc_block.values.xyz[idx] += gc_state.position[idx];
+-                        else {  // Absolute mode
+-#ifdef ROTATION_ENABLE
+-                            if(r_axes.mask && (idx == idx_0 || idx == idx_1))
+-                                gc_block.values.xyz[idx] += gc_state.g92_offset.coord.values[idx] + gc_state.modal.tool_length_offset[idx];
++                            if(gc_block.modal.distance_incremental)
++                                gc_block.values.xyz[idx] += gc_state.position[idx];
+                             else
+-#endif
+                                 gc_block.values.xyz[idx] += gc_get_block_offset(&gc_block, idx);
+                         }
+-                    }
+-                } while(idx);
++                    } while(idx);
++                }
+             }
+ 
+             // Check remaining non-modal commands for errors.
+@@ -3172,6 +3316,30 @@ status_code_t gc_execute_block (char *block)
+ 
+         gc_parser_flags.motion_mode_changed = gc_block.modal.motion != gc_state.modal.motion;
+ 
++#ifdef ROTATION_ENABLE
++        if(gc_xy_rotation_active(&gc_block.modal.g5x_offset.data)) {
++            switch(gc_block.modal.motion) {
++
++                case MotionMode_Seek:
++                case MotionMode_Linear:
++                case MotionMode_ProbeToward:
++                case MotionMode_ProbeTowardNoError:
++                case MotionMode_ProbeAway:
++                case MotionMode_ProbeAwayNoError:
++                    break;
++
++                case MotionMode_CwArc:
++                case MotionMode_CcwArc:
++                    if(gc_block.modal.plane_select != PlaneSelect_XY)
++                        RETURN(Status_GcodeIllegalPlane);
++                    break;
++
++                default:
++                    RETURN(Status_GcodeUnsupportedCommand);
++            }
++        }
++#endif
++
+         if (gc_block.modal.motion == MotionMode_Seek) {
+             // [G0 Errors]: Axis letter not configured or without real value (done.)
+             // Axis words are optional. If missing, set axis command flag to ignore execution.
+@@ -4255,30 +4423,7 @@ status_code_t gc_execute_block (char *block)
+                 // Update system coordinate system if currently active.
+                 if(gc_state.modal.g5x_offset.id == coord_system.id) {
+ 
+-#ifdef ROTATION_ENABLE
+-
+-                    if(gc_state.modal.g5x_offset.data.rotation != 0.0f &&
+-                        gc_state.modal.g5x_offset.data.rotation != coord_system.data.rotation) {
+-
+-                        gc_state.position[plane.axis_0] -= (gc_state.g92_offset.coord.values[plane.axis_0] + gc_state.modal.tool_length_offset[plane.axis_0]);
+-                        gc_state.position[plane.axis_1] -= (gc_state.g92_offset.coord.values[plane.axis_1] + gc_state.modal.tool_length_offset[plane.axis_1]);
+-                        rotate((coord_data_t *)&gc_state.position, plane, -gc_block.modal.g5x_offset.data.rotation);
+-                        gc_state.position[plane.axis_0] -= gc_block.modal.g5x_offset.data.coord.values[plane.axis_0];
+-                        gc_state.position[plane.axis_1] -= gc_block.modal.g5x_offset.data.coord.values[plane.axis_1];
+-                    }
+-
+                     memcpy(&gc_state.modal.g5x_offset.data, &coord_system.data, sizeof(coord_system_data_t));
+-
+-                    if(gc_state.modal.g5x_offset.data.rotation != 0.0f) {
+-                        gc_state.position[plane.axis_0] += gc_block.modal.g5x_offset.data.coord.values[plane.axis_0];
+-                        gc_state.position[plane.axis_1] += gc_block.modal.g5x_offset.data.coord.values[plane.axis_1];
+-                        rotate((coord_data_t *)gc_state.position, plane, gc_state.modal.g5x_offset.data.rotation);
+-                        gc_state.position[plane.axis_0] += (gc_state.g92_offset.coord.values[plane.axis_0] + gc_state.modal.tool_length_offset[plane.axis_0]);
+-                        gc_state.position[plane.axis_1] += (gc_state.g92_offset.coord.values[plane.axis_1] + gc_state.modal.tool_length_offset[plane.axis_1]);
+-                    }
+-#else
+-                    memcpy(&gc_state.modal.g5x_offset.data, &coord_system.data, sizeof(coord_system_data_t));
+-#endif
+                     system_flag_wco_change();
+                 }
+             }
+diff --git a/gcode.h b/gcode.h
+index 961e03a..941518b 100644
+--- a/gcode.h
++++ b/gcode.h
+@@ -752,6 +752,9 @@ float *gc_get_scaling (void);
+ // Get current axis offset.
+ float gc_get_offset (uint_fast8_t idx, bool real_time);
+ 
++// Get work position from machine position.
++void gc_get_work_position (float *position, const float *machine_position, bool real_time);
++
+ void gc_clear_offset (coord_system_id_t id);
+ 
+ char *gc_coord_system_to_str (coord_system_id_t id);
+diff --git a/report.c b/report.c
+index 6a9cbb4..e1ee56e 100644
+--- a/report.c
++++ b/report.c
+@@ -1277,8 +1277,8 @@ void report_realtime_status (stream_write_ptr stream_write, status_report_tracki
+         // Apply work coordinate offsets and tool length offset to current position.
+         for(idx = 0; idx < N_AXIS; idx++) {
+             wco[idx] = gc_get_offset(idx, true);
+-            print_position[idx] -= wco[idx];
+         }
++        gc_get_work_position(print_position, print_position, true);
+     }
+ 
+     // Report position

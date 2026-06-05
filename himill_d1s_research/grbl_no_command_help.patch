@@ -1,0 +1,162 @@
+diff --git i/system.c w/system.c
+index a9d3580..e6625ba 100644
+--- i/system.c
++++ w/system.c
+@@ -913,29 +913,37 @@ FLASHMEM const char *help_reboot (const char *cmd)
+ 
+ /*! \brief Command dispatch table
+  */
++#ifdef NO_COMMAND_HELP
++  #define COMMAND_HELP_STR(text) { .str = NULL }
++  #define COMMAND_HELP_FN(fn) { .str = NULL }
++#else
++  #define COMMAND_HELP_STR(text) { .str = text }
++  #define COMMAND_HELP_FN(fn) { .fn = fn }
++#endif
++
+ PROGMEM static const sys_command_t sys_commands[] = {
+-    { "G", output_parser_state, { .noargs = On, .allow_blocking = On }, { .str = "output parser state" } },
+-    { "J", jog, {}, { .str = "$J=<gcode> - jog machine" } },
+-    { "#", output_ngc_parameters, { .allow_blocking = On }, {
+-        .str = "output offsets, tool table, probing and home position"
++    { "G", output_parser_state, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("output parser state") },
++    { "J", jog, {}, COMMAND_HELP_STR("$J=<gcode> - jog machine") },
++    { "#", output_ngc_parameters, { .allow_blocking = On }, COMMAND_HELP_STR(
++        "output offsets, tool table, probing and home position"
+ #if NGC_PARAMETERS_ENABLE
+      ASCII_EOL "$#=<n> - output value for parameter <n>"
+ #endif
+-    } },
+-    { "$", output_settings, { .allow_blocking = On }, {
+-        .str = "$<n> - output setting <n> value"
++    ) },
++    { "$", output_settings, { .allow_blocking = On }, COMMAND_HELP_STR(
++        "$<n> - output setting <n> value"
+      ASCII_EOL "$<n>=<value> - assign <value> to settings <n>"
+      ASCII_EOL "$$ - output all setting values"
+      ASCII_EOL "$$=<n> - output setting details for setting <n>"
+-    } },
+-    { "+", output_all_settings, { .allow_blocking = On }, { .str = "output all setting values" } },
+-    { "SED", output_setting_description, { .allow_blocking = On }, { .str = "$SED=<n> - output settings description for setting <n>" } },
+-    { "B", toggle_block_delete, { .noargs = On, .help_fn = On }, { .fn = help_switches } },
+-    { "S", toggle_single_block, { .noargs = On, .help_fn = On }, { .fn = help_switches } },
+-    { "O", toggle_optional_stop, { .noargs = On, .help_fn = On }, { .fn = help_switches } },
+-    { "C", check_mode, { .noargs = On }, { .str = "enable check mode, <Reset> to exit" } },
+-    { "X", disable_lock, {}, { .str = "unlock machine" } },
+-    { "H", home, { .help_fn = On }, { .fn = help_homing } },
++    ) },
++    { "+", output_all_settings, { .allow_blocking = On }, COMMAND_HELP_STR("output all setting values") },
++    { "SED", output_setting_description, { .allow_blocking = On }, COMMAND_HELP_STR("$SED=<n> - output settings description for setting <n>") },
++    { "B", toggle_block_delete, { .noargs = On, .help_fn = On }, COMMAND_HELP_FN(help_switches) },
++    { "S", toggle_single_block, { .noargs = On, .help_fn = On }, COMMAND_HELP_FN(help_switches) },
++    { "O", toggle_optional_stop, { .noargs = On, .help_fn = On }, COMMAND_HELP_FN(help_switches) },
++    { "C", check_mode, { .noargs = On }, COMMAND_HELP_STR("enable check mode, <Reset> to exit") },
++    { "X", disable_lock, {}, COMMAND_HELP_STR("unlock machine") },
++    { "H", home, { .help_fn = On }, COMMAND_HELP_FN(help_homing) },
+     { "HX", home_x },
+     { "HY", home_y },
+     { "HZ", home_z },
+@@ -957,49 +965,49 @@ PROGMEM static const sys_command_t sys_commands[] = {
+ #ifdef W_AXIS
+     { "HW", home_w },
+ #endif
+-    { "HSS", report_current_home_signal_state, { .noargs = On, .allow_blocking = On }, { .str = "report homing switches status" } },
+-    { "HELP", output_help, { .allow_blocking = On }, {
+-        .str = "$HELP - output help topics"
++    { "HSS", report_current_home_signal_state, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("report homing switches status") },
++    { "HELP", output_help, { .allow_blocking = On }, COMMAND_HELP_STR(
++        "$HELP - output help topics"
+      ASCII_EOL "$HELP <topic> - output help for <topic>"
+-    } },
+-    { "SPINDLES", enumerate_spindles, { .noargs = On, .allow_blocking = On }, { .str = "enumerate spindles, human readable" } },
+-    { "SPINDLESH", enumerate_spindles_mr, { .noargs = On, .allow_blocking = On }, { .str = "enumerate spindles, machine readable" } },
+-    { "SLP", enter_sleep, { .noargs = On }, { .str = "enter sleep mode" } },
+-    { "TLR", set_tool_reference, { .noargs = On }, { .str = "set tool offset reference" } },
+-    { "TPW", tool_probe_workpiece, { .noargs = On }, { .str = "probe tool plate" } },
+-    { "I", build_info, { .allow_blocking = On }, {
+-        .str = "output system information"
++    ) },
++    { "SPINDLES", enumerate_spindles, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate spindles, human readable") },
++    { "SPINDLESH", enumerate_spindles_mr, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate spindles, machine readable") },
++    { "SLP", enter_sleep, { .noargs = On }, COMMAND_HELP_STR("enter sleep mode") },
++    { "TLR", set_tool_reference, { .noargs = On }, COMMAND_HELP_STR("set tool offset reference") },
++    { "TPW", tool_probe_workpiece, { .noargs = On }, COMMAND_HELP_STR("probe tool plate") },
++    { "I", build_info, { .allow_blocking = On }, COMMAND_HELP_STR(
++        "output system information"
+ #if !DISABLE_BUILD_INFO_WRITE_COMMAND
+      ASCII_EOL "$I=<string> - set build info string"
+ #endif
+-    } },
+-    { "I+", output_all_build_info, { .noargs = On, .allow_blocking = On }, { .str = "output extended system information" } },
+-    { "RST", settings_reset, { .allow_blocking = On, .help_fn = On }, { .fn = help_rst } },
+-    { "N", output_startup_lines, { .noargs = On, .allow_blocking = On }, { .str = "output startup lines" } },
+-    { "N0", set_startup_line0, {}, { .str = "N0=<gcode> - set startup line 0" } },
+-    { "N1", set_startup_line1, {}, { .str = "N1=<gcode> - set startup line 1" } },
+-    { "EA", enumerate_alarms, { .noargs = On, .allow_blocking = On }, { .str = "enumerate alarms" } },
+-    { "EAG", enumerate_alarms_grblformatted, { .noargs = On, .allow_blocking = On }, { .str = "enumerate alarms, Grbl formatted" } },
+-    { "EE", enumerate_errors, { .noargs = On, .allow_blocking = On }, { .str = "enumerate status codes" } },
+-    { "EEG", enumerate_errors_grblformatted, { .noargs = On, .allow_blocking = On }, { .str = "enumerate status codes, Grbl formatted" } },
+-    { "EG", enumerate_groups, { .noargs = On, .allow_blocking = On }, { .str = "enumerate setting groups" } },
+-    { "ES", enumerate_settings, { .noargs = On, .allow_blocking = On }, { .str = "enumerate settings" } },
+-    { "ESG", enumerate_settings_grblformatted, { .noargs = On, .allow_blocking = On }, { .str = "enumerate settings, Grbl formatted" } },
+-    { "ESH", enumerate_settings_halformatted, { .noargs = On, .allow_blocking = On }, { .str = "enumerate settings, grblHAL formatted" } },
+-    { "E*", enumerate_all, { .noargs = On, .allow_blocking = On }, { .str = "enumerate alarms, status codes and settings" } },
+-    { "PINS", report_pins, { .noargs = On, .allow_blocking = On, .help_fn = On }, { .fn = help_pins } },
+-    { "PINSTATE", report_pin_states, { .noargs = On, .allow_blocking = On, .help_fn = On }, { .fn = help_pin_state } },
+-    { "PORTS", report_uart_ports, { .noargs = On, .allow_blocking = On }, { .str = "enumerate serial (UART) ports" } },
+-    { "LEV", report_last_signals_event, { .noargs = On, .allow_blocking = On }, { .str = "output last control signal events" } },
+-    { "LIM", report_current_limit_state, { .noargs = On, .allow_blocking = On }, { .str = "output current limit pins" } },
+-    { "SD", report_spindle_data, { .help_fn = On }, { .fn = help_spindle } },
+-    { "SR", spindle_reset_data, { .help_fn = On }, { .fn = help_spindle } },
+-    { "SDS", report_stepper_status, { .noargs = On, .allow_blocking = On, .help_fn = On }, { .fn = help_steppers } },
+-    { "REBOOT", reboot_system, { .noargs = On, .allow_blocking = On, .help_fn = On }, { .fn = help_reboot } },
+-    { "RTC", rtc_action, { .allow_blocking = On, .help_fn = On }, { .fn = help_rtc } },
+-    { "DWNGRD", settings_downgrade, { .noargs = On, .allow_blocking = On }, { .str = "toggle setting flags for downgrade" } },
++    ) },
++    { "I+", output_all_build_info, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("output extended system information") },
++    { "RST", settings_reset, { .allow_blocking = On, .help_fn = On }, COMMAND_HELP_FN(help_rst) },
++    { "N", output_startup_lines, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("output startup lines") },
++    { "N0", set_startup_line0, {}, COMMAND_HELP_STR("N0=<gcode> - set startup line 0") },
++    { "N1", set_startup_line1, {}, COMMAND_HELP_STR("N1=<gcode> - set startup line 1") },
++    { "EA", enumerate_alarms, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate alarms") },
++    { "EAG", enumerate_alarms_grblformatted, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate alarms, Grbl formatted") },
++    { "EE", enumerate_errors, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate status codes") },
++    { "EEG", enumerate_errors_grblformatted, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate status codes, Grbl formatted") },
++    { "EG", enumerate_groups, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate setting groups") },
++    { "ES", enumerate_settings, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate settings") },
++    { "ESG", enumerate_settings_grblformatted, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate settings, Grbl formatted") },
++    { "ESH", enumerate_settings_halformatted, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate settings, grblHAL formatted") },
++    { "E*", enumerate_all, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate alarms, status codes and settings") },
++    { "PINS", report_pins, { .noargs = On, .allow_blocking = On, .help_fn = On }, COMMAND_HELP_FN(help_pins) },
++    { "PINSTATE", report_pin_states, { .noargs = On, .allow_blocking = On, .help_fn = On }, COMMAND_HELP_FN(help_pin_state) },
++    { "PORTS", report_uart_ports, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate serial (UART) ports") },
++    { "LEV", report_last_signals_event, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("output last control signal events") },
++    { "LIM", report_current_limit_state, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("output current limit pins") },
++    { "SD", report_spindle_data, { .help_fn = On }, COMMAND_HELP_FN(help_spindle) },
++    { "SR", spindle_reset_data, { .help_fn = On }, COMMAND_HELP_FN(help_spindle) },
++    { "SDS", report_stepper_status, { .noargs = On, .allow_blocking = On, .help_fn = On }, COMMAND_HELP_FN(help_steppers) },
++    { "REBOOT", reboot_system, { .noargs = On, .allow_blocking = On, .help_fn = On }, COMMAND_HELP_FN(help_reboot) },
++    { "RTC", rtc_action, { .allow_blocking = On, .help_fn = On }, COMMAND_HELP_FN(help_rtc) },
++    { "DWNGRD", settings_downgrade, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("toggle setting flags for downgrade") },
+ #ifdef DEBUG
+-    { "Q", output_memmap, { .noargs = On }, { .str = "output NVS memory allocation" } },
++    { "Q", output_memmap, { .noargs = On }, COMMAND_HELP_STR("output NVS memory allocation") },
+ #endif
+ };
+ 
+diff --git i/report.c w/report.c
+index 6a9cbb4..a9095ad 100644
+--- i/report.c
++++ w/report.c
+@@ -309,7 +309,11 @@ FLASHMEM static void report_init_message (stream_write_ptr write)
+     hal.stream.report.override_counter = hal.stream.report.wco_counter = 0;
+ 
+ #if COMPATIBILITY_LEVEL == 0
++#ifdef NO_COMMAND_HELP
++    write(ASCII_EOL "GrblHAL " GRBL_VERSION ASCII_EOL);
++#else
+     write(ASCII_EOL "GrblHAL " GRBL_VERSION " ['$' or '$HELP' for help]" ASCII_EOL);
++#endif
+ #else
+     write(ASCII_EOL "Grbl " GRBL_VERSION " ['$' for help]" ASCII_EOL);
+ #endif

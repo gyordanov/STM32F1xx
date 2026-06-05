@@ -1,0 +1,72 @@
+diff --git a/fs_stream.c b/fs_stream.c
+index 2c13f9b..8f0c96e 100644
+--- a/fs_stream.c
++++ b/fs_stream.c
+@@ -93,7 +93,7 @@ static struct {
+     vfs_st_mode_t mode;
+ } fs = {};
+ 
+-static bool frewind = false, webui = false;
++static bool frewind = false;
+ static io_stream_t active_stream;
+ static driver_reset_ptr driver_reset = NULL;
+ static on_realtime_report_ptr on_realtime_report;
+@@ -333,7 +333,7 @@ FLASHMEM static void stream_end_job (bool flush)
+     if(flush)                                                           // Flush input buffer?
+         hal.stream.reset_read_buffer();                                 // Yes, do it.
+ 
+-    webui = frewind = false;
++    frewind = false;
+ 
+     if(grbl.on_stream_changed)
+         grbl.on_stream_changed(hal.stream.type);
+@@ -532,24 +532,22 @@ FLASHMEM static void stream_changed (stream_type_t type)
+ {
+     if(type != StreamType_File && file.handle != NULL) {
+ 
+-        // Reconnect from WebUI?
+-        if(webui && (type != StreamType_WebSocket || hal.stream.state.webui_connected)) {
+-            active_stream.set_enqueue_rt_handler(enqueue_realtime_command); // Restore previous real time handler,
+-            memcpy(&active_stream, &hal.stream, sizeof(io_stream_t));       // save current stream pointers
+-            hal.stream.read = read_redirected;                              // then redirect to read from file instead
+-            stream_set_type(StreamType_File, file.handle);                  // ...
+-
+-            if(hal.stream.suspend_read)                                     // If active stream support tool change suspend
+-                hal.stream.suspend_read = stream_suspend;                   // then we do as well
+-            else                                                            //
+-                hal.stream.suspend_read = NULL;                             // else not
+-
+-            if(type == StreamType_WebSocket)                                                        // If WebUI came back online
+-                enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(drop_input_stream);    // restore normal operation
+-            else                                                                                    // else
+-                enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(check_input_stream);   // check for stream takeover
+-        } else // Terminate job.
+-            task_add_immediate(terminate_job, NULL);
++        // Keep SD jobs running if the sender disconnects. Rebind to the
++        // current stream for realtime commands while file input remains active.
++        active_stream.set_enqueue_rt_handler(enqueue_realtime_command); // Restore previous real time handler,
++        memcpy(&active_stream, &hal.stream, sizeof(io_stream_t));       // save current stream pointers
++        hal.stream.read = read_redirected;                              // then redirect to read from file instead
++        stream_set_type(StreamType_File, file.handle);                  // ...
++
++        if(hal.stream.suspend_read)                                     // If active stream support tool change suspend
++            hal.stream.suspend_read = stream_suspend;                   // then we do as well
++        else                                                            //
++            hal.stream.suspend_read = NULL;                             // else not
++
++        if(type == StreamType_WebSocket)                                                        // If WebSocket is active
++            enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(drop_input_stream);    // restore normal operation
++        else                                                                                    // else
++            enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(check_input_stream);   // check for stream takeover
+     }
+ 
+     if(on_stream_changed)
+@@ -573,8 +571,6 @@ FLASHMEM status_code_t stream_file (sys_state_t state, char *fname)
+ 
+             gc_state.last_error = Status_OK;            // Start with no errors
+             grbl.report.status_message(Status_OK);      // and confirm command to originator.
+-            webui = hal.stream.state.webui_connected;   // Did WebUI start this job?
+-
+             if(!(grbl.on_file_open && (retval = grbl.on_file_open(fname, file.handle, true)) == Status_OK)) {
+ 
+                 memcpy(&active_stream, &hal.stream, sizeof(io_stream_t));   // Save current stream pointers

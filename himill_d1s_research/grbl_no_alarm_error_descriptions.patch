@@ -1,0 +1,237 @@
+diff --git i/alarms.c w/alarms.c
+index 96962f7..093366d 100644
+--- i/alarms.c
++++ w/alarms.c
+@@ -26,28 +26,34 @@
+ #include "grbl.h"
+ #include "core_handlers.h"
+ 
++#ifdef NO_ALARM_ERROR_DESCRIPTIONS
++  #define ALARM_DESCRIPTION(text) NULL
++#else
++  #define ALARM_DESCRIPTION(text) text
++#endif
++
+ PROGMEM static const alarm_detail_t alarm_detail[] = {
+-    { Alarm_HardLimit, "Hard limit has been triggered. Machine position is likely lost due to sudden halt. Re-homing is highly recommended." },
+-    { Alarm_SoftLimit, "Soft limit alarm. G-code motion target exceeds machine travel. Machine position retained. Alarm may be safely unlocked." },
+-    { Alarm_AbortCycle, "Reset/E-stop while in motion. Machine position is likely lost due to sudden halt. Re-homing is highly recommended." },
+-    { Alarm_ProbeFailInitial, "Probe fail. Probe is not in the expected initial state before starting probe cycle when G38.2 and G38.3 is not triggered and G38.4 and G38.5 is triggered." },
+-    { Alarm_ProbeFailContact, "Probe fail. Probe did not contact the workpiece within the programmed travel for G38.2 and G38.4." },
+-    { Alarm_HomingFailReset, "Homing fail. The active homing cycle was reset." },
+-    { Alarm_HomingFailDoor, "Homing fail. Safety door was opened during homing cycle." },
+-    { Alarm_FailPulloff, "Homing fail. Pull off travel failed to clear limit switch. Try increasing pull-off setting or check wiring." },
+-    { Alarm_HomingFailApproach, "Homing fail. Could not find limit switch within search distances. Try increasing max travel, decreasing pull-off distance, or check wiring." },
+-    { Alarm_EStop, "EStop asserted. Clear and reset" },
+-    { Alarm_HomingRequired, "Homing required. Execute homing command ($H) to continue." },
+-    { Alarm_LimitsEngaged, "Limit switch engaged. Clear before continuing." },
+-    { Alarm_ProbeProtect, "Probe protection triggered. Clear before continuing." },
+-    { Alarm_Spindle, "Spindle at speed timeout. Clear before continuing." },
+-    { Alarm_HomingFailAutoSquaringApproach, "Homing fail. Could not find second limit switch for auto squared axis within search distances. Try increasing max travel, decreasing pull-off distance, or check wiring." },
+-    { Alarm_SelftestFailed, "Power on selftest (POS) failed." },
+-    { Alarm_MotorFault, "Motor fault." },
+-    { Alarm_HomingFail, "Homing fail. Bad configuration." },
+-    { Alarm_ModbusException, "Modbus exception. Timeout or message error." },
+-    { Alarm_ExpanderException, "I/O expander communication failed." },
+-    { Alarm_NVS_Failed, "Non Volatile Storage (EEPROM) failure." }
++    { Alarm_HardLimit, ALARM_DESCRIPTION("Hard limit has been triggered. Machine position is likely lost due to sudden halt. Re-homing is highly recommended.") },
++    { Alarm_SoftLimit, ALARM_DESCRIPTION("Soft limit alarm. G-code motion target exceeds machine travel. Machine position retained. Alarm may be safely unlocked.") },
++    { Alarm_AbortCycle, ALARM_DESCRIPTION("Reset/E-stop while in motion. Machine position is likely lost due to sudden halt. Re-homing is highly recommended.") },
++    { Alarm_ProbeFailInitial, ALARM_DESCRIPTION("Probe fail. Probe is not in the expected initial state before starting probe cycle when G38.2 and G38.3 is not triggered and G38.4 and G38.5 is triggered.") },
++    { Alarm_ProbeFailContact, ALARM_DESCRIPTION("Probe fail. Probe did not contact the workpiece within the programmed travel for G38.2 and G38.4.") },
++    { Alarm_HomingFailReset, ALARM_DESCRIPTION("Homing fail. The active homing cycle was reset.") },
++    { Alarm_HomingFailDoor, ALARM_DESCRIPTION("Homing fail. Safety door was opened during homing cycle.") },
++    { Alarm_FailPulloff, ALARM_DESCRIPTION("Homing fail. Pull off travel failed to clear limit switch. Try increasing pull-off setting or check wiring.") },
++    { Alarm_HomingFailApproach, ALARM_DESCRIPTION("Homing fail. Could not find limit switch within search distances. Try increasing max travel, decreasing pull-off distance, or check wiring.") },
++    { Alarm_EStop, ALARM_DESCRIPTION("EStop asserted. Clear and reset") },
++    { Alarm_HomingRequired, ALARM_DESCRIPTION("Homing required. Execute homing command ($H) to continue.") },
++    { Alarm_LimitsEngaged, ALARM_DESCRIPTION("Limit switch engaged. Clear before continuing.") },
++    { Alarm_ProbeProtect, ALARM_DESCRIPTION("Probe protection triggered. Clear before continuing.") },
++    { Alarm_Spindle, ALARM_DESCRIPTION("Spindle at speed timeout. Clear before continuing.") },
++    { Alarm_HomingFailAutoSquaringApproach, ALARM_DESCRIPTION("Homing fail. Could not find second limit switch for auto squared axis within search distances. Try increasing max travel, decreasing pull-off distance, or check wiring.") },
++    { Alarm_SelftestFailed, ALARM_DESCRIPTION("Power on selftest (POS) failed.") },
++    { Alarm_MotorFault, ALARM_DESCRIPTION("Motor fault.") },
++    { Alarm_HomingFail, ALARM_DESCRIPTION("Homing fail. Bad configuration.") },
++    { Alarm_ModbusException, ALARM_DESCRIPTION("Modbus exception. Timeout or message error.") },
++    { Alarm_ExpanderException, ALARM_DESCRIPTION("I/O expander communication failed.") },
++    { Alarm_NVS_Failed, ALARM_DESCRIPTION("Non Volatile Storage (EEPROM) failure.") }
+ };
+ 
+ static alarm_details_t details = {
+diff --git i/errors.c w/errors.c
+index 6606930..7383571 100644
+--- i/errors.c
++++ w/errors.c
+@@ -26,90 +26,96 @@
+ #include "grbl.h"
+ #include "core_handlers.h"
+ 
++#ifdef NO_ALARM_ERROR_DESCRIPTIONS
++  #define STATUS_DESCRIPTION(text) NULL
++#else
++  #define STATUS_DESCRIPTION(text) text
++#endif
++
+ PROGMEM static const status_detail_t status_detail[] = {
+     { Status_OK, NULL },
+-    { Status_ExpectedCommandLetter, "G-code words consist of a letter and a value. Letter was not found." },
+-    { Status_BadNumberFormat, "Missing the expected G-code word value or numeric value format is not valid." },
+-    { Status_InvalidStatement, "'$' system command was not recognized or supported." },
+-    { Status_NegativeValue, "Negative value received for an expected positive value." },
+-    { Status_HomingDisabled, "Homing cycle failure. Homing is not configured via settings." },
+-    { Status_SettingStepPulseMin, "Step pulse time must be greater or equal to 2 microseconds." },
+-    { Status_SettingReadFail, "A settings read failed. Auto-restoring affected settings to default values." },
+-    { Status_IdleError, "'$' command cannot be used unless controller state is IDLE. Ensures smooth operation during a job." },
+-    { Status_SystemGClock, "G-code commands are locked out during alarm or jog state." },
+-    { Status_SoftLimitError, "Soft limits cannot be enabled without homing also enabled." },
+-    { Status_Overflow, "Max characters per line exceeded. Received command line was not executed." },
+-    { Status_MaxStepRateExceeded, "'$' setting value cause the step rate to exceed the maximum supported." },
+-    { Status_CheckDoor, "Safety door detected as opened and door state initiated." },
+-    { Status_LineLengthExceeded, "Build info or startup line exceeded line length limit. Line not stored." },
+-    { Status_TravelExceeded, "Jog target exceeds machine travel. Jog command has been ignored." },
+-    { Status_InvalidJogCommand, "Jog command has no '=' or contains prohibited g-code." },
+-    { Status_SettingDisabledLaser, "Laser mode requires PWM output." },
+-    { Status_Reset, "Reset asserted" },
+-    { Status_NonPositiveValue, "Non positive value" },
+-    { Status_GcodeUnsupportedCommand, "Unsupported or invalid g-code command found in block." },
+-    { Status_GcodeModalGroupViolation, "More than one g-code command from same modal group found in block." },
+-    { Status_GcodeUndefinedFeedRate, "Feed rate has not yet been set or is undefined." },
+-    { Status_GcodeCommandValueNotInteger, "G-code command in block requires an integer value." },
+-    { Status_GcodeAxisCommandConflict, "More than one g-code command that requires axis words found in block." },
+-    { Status_GcodeWordRepeated, "Repeated g-code word found in block." },
+-    { Status_GcodeNoAxisWords, "No axis words found in block for g-code command or current modal state which requires them." },
+-    { Status_GcodeInvalidLineNumber, "Line number value is invalid." },
+-    { Status_GcodeValueWordMissing, "G-code command is missing a required value word." },
+-    { Status_GcodeUnsupportedCoordSys, "G59.x work coordinate systems are not supported." },
+-    { Status_GcodeG53InvalidMotionMode, "G53 only allowed with G0 and G1 motion modes." },
+-    { Status_GcodeAxisWordsExist, "Axis words found in block when no command or current modal state uses them." },
+-    { Status_GcodeNoAxisWordsInPlane, "G2 and G3 arcs require at least one in-plane axis word." },
+-    { Status_GcodeInvalidTarget, "Motion command target is invalid." },
+-    { Status_GcodeArcRadiusError, "Arc radius value is invalid." },
+-    { Status_GcodeNoOffsetsInPlane, "G2 and G3 arcs require at least one in-plane offset word." },
+-    { Status_GcodeUnusedWords, "Unused value words found in block." },
+-    { Status_GcodeG43DynamicAxisError, "G43.1 dynamic tool length offset is not assigned to configured tool length axis." },
+-    { Status_GcodeIllegalToolTableEntry, "Tool number greater than max supported value or undefined tool selected." },
+-    { Status_GcodeValueOutOfRange, "Value out of range." },
+-    { Status_GcodeToolChangePending, "G-code command not allowed when tool change is pending." },
+-    { Status_GcodeSpindleNotRunning, "Spindle not running when motion commanded in CSS or spindle sync mode." },
+-    { Status_GcodeIllegalPlane, "Plane must be ZX for threading." },
+-    { Status_GcodeMaxFeedRateExceeded, "Max. feed rate exceeded." },
+-    { Status_GcodeRPMOutOfRange, "RPM out of range." },
+-    { Status_LimitsEngaged, "Only homing is allowed when a limit switch is engaged." },
+-    { Status_HomingRequired, "Home machine to continue." },
+-    { Status_GCodeToolError, "ATC: current tool is not set. Set current tool with M61." },
+-    { Status_ValueWordConflict, "Value word conflict." },
+-    { Status_SelfTestFailed, "Power on self test failed. A hard reset is required." },
+-    { Status_EStop, "Emergency stop active." },
+-    { Status_MotorFault, "Motor fault." },
+-    { Status_SettingValueOutOfRange, "Setting value is out of range." },
+-    { Status_SettingDisabled, "Setting is not available, possibly due to limited driver support." },
+-    { Status_GcodeInvalidRetractPosition, "Retract position is less than drill depth." },
+-    { Status_IllegalHomingConfiguration, "Attempt to home two auto squared axes at the same time." },
++    { Status_ExpectedCommandLetter, STATUS_DESCRIPTION("G-code words consist of a letter and a value. Letter was not found.") },
++    { Status_BadNumberFormat, STATUS_DESCRIPTION("Missing the expected G-code word value or numeric value format is not valid.") },
++    { Status_InvalidStatement, STATUS_DESCRIPTION("'$' system command was not recognized or supported.") },
++    { Status_NegativeValue, STATUS_DESCRIPTION("Negative value received for an expected positive value.") },
++    { Status_HomingDisabled, STATUS_DESCRIPTION("Homing cycle failure. Homing is not configured via settings.") },
++    { Status_SettingStepPulseMin, STATUS_DESCRIPTION("Step pulse time must be greater or equal to 2 microseconds.") },
++    { Status_SettingReadFail, STATUS_DESCRIPTION("A settings read failed. Auto-restoring affected settings to default values.") },
++    { Status_IdleError, STATUS_DESCRIPTION("'$' command cannot be used unless controller state is IDLE. Ensures smooth operation during a job.") },
++    { Status_SystemGClock, STATUS_DESCRIPTION("G-code commands are locked out during alarm or jog state.") },
++    { Status_SoftLimitError, STATUS_DESCRIPTION("Soft limits cannot be enabled without homing also enabled.") },
++    { Status_Overflow, STATUS_DESCRIPTION("Max characters per line exceeded. Received command line was not executed.") },
++    { Status_MaxStepRateExceeded, STATUS_DESCRIPTION("'$' setting value cause the step rate to exceed the maximum supported.") },
++    { Status_CheckDoor, STATUS_DESCRIPTION("Safety door detected as opened and door state initiated.") },
++    { Status_LineLengthExceeded, STATUS_DESCRIPTION("Build info or startup line exceeded line length limit. Line not stored.") },
++    { Status_TravelExceeded, STATUS_DESCRIPTION("Jog target exceeds machine travel. Jog command has been ignored.") },
++    { Status_InvalidJogCommand, STATUS_DESCRIPTION("Jog command has no '=' or contains prohibited g-code.") },
++    { Status_SettingDisabledLaser, STATUS_DESCRIPTION("Laser mode requires PWM output.") },
++    { Status_Reset, STATUS_DESCRIPTION("Reset asserted") },
++    { Status_NonPositiveValue, STATUS_DESCRIPTION("Non positive value") },
++    { Status_GcodeUnsupportedCommand, STATUS_DESCRIPTION("Unsupported or invalid g-code command found in block.") },
++    { Status_GcodeModalGroupViolation, STATUS_DESCRIPTION("More than one g-code command from same modal group found in block.") },
++    { Status_GcodeUndefinedFeedRate, STATUS_DESCRIPTION("Feed rate has not yet been set or is undefined.") },
++    { Status_GcodeCommandValueNotInteger, STATUS_DESCRIPTION("G-code command in block requires an integer value.") },
++    { Status_GcodeAxisCommandConflict, STATUS_DESCRIPTION("More than one g-code command that requires axis words found in block.") },
++    { Status_GcodeWordRepeated, STATUS_DESCRIPTION("Repeated g-code word found in block.") },
++    { Status_GcodeNoAxisWords, STATUS_DESCRIPTION("No axis words found in block for g-code command or current modal state which requires them.") },
++    { Status_GcodeInvalidLineNumber, STATUS_DESCRIPTION("Line number value is invalid.") },
++    { Status_GcodeValueWordMissing, STATUS_DESCRIPTION("G-code command is missing a required value word.") },
++    { Status_GcodeUnsupportedCoordSys, STATUS_DESCRIPTION("G59.x work coordinate systems are not supported.") },
++    { Status_GcodeG53InvalidMotionMode, STATUS_DESCRIPTION("G53 only allowed with G0 and G1 motion modes.") },
++    { Status_GcodeAxisWordsExist, STATUS_DESCRIPTION("Axis words found in block when no command or current modal state uses them.") },
++    { Status_GcodeNoAxisWordsInPlane, STATUS_DESCRIPTION("G2 and G3 arcs require at least one in-plane axis word.") },
++    { Status_GcodeInvalidTarget, STATUS_DESCRIPTION("Motion command target is invalid.") },
++    { Status_GcodeArcRadiusError, STATUS_DESCRIPTION("Arc radius value is invalid.") },
++    { Status_GcodeNoOffsetsInPlane, STATUS_DESCRIPTION("G2 and G3 arcs require at least one in-plane offset word.") },
++    { Status_GcodeUnusedWords, STATUS_DESCRIPTION("Unused value words found in block.") },
++    { Status_GcodeG43DynamicAxisError, STATUS_DESCRIPTION("G43.1 dynamic tool length offset is not assigned to configured tool length axis.") },
++    { Status_GcodeIllegalToolTableEntry, STATUS_DESCRIPTION("Tool number greater than max supported value or undefined tool selected.") },
++    { Status_GcodeValueOutOfRange, STATUS_DESCRIPTION("Value out of range.") },
++    { Status_GcodeToolChangePending, STATUS_DESCRIPTION("G-code command not allowed when tool change is pending.") },
++    { Status_GcodeSpindleNotRunning, STATUS_DESCRIPTION("Spindle not running when motion commanded in CSS or spindle sync mode.") },
++    { Status_GcodeIllegalPlane, STATUS_DESCRIPTION("Plane must be ZX for threading.") },
++    { Status_GcodeMaxFeedRateExceeded, STATUS_DESCRIPTION("Max. feed rate exceeded.") },
++    { Status_GcodeRPMOutOfRange, STATUS_DESCRIPTION("RPM out of range.") },
++    { Status_LimitsEngaged, STATUS_DESCRIPTION("Only homing is allowed when a limit switch is engaged.") },
++    { Status_HomingRequired, STATUS_DESCRIPTION("Home machine to continue.") },
++    { Status_GCodeToolError, STATUS_DESCRIPTION("ATC: current tool is not set. Set current tool with M61.") },
++    { Status_ValueWordConflict, STATUS_DESCRIPTION("Value word conflict.") },
++    { Status_SelfTestFailed, STATUS_DESCRIPTION("Power on self test failed. A hard reset is required.") },
++    { Status_EStop, STATUS_DESCRIPTION("Emergency stop active.") },
++    { Status_MotorFault, STATUS_DESCRIPTION("Motor fault.") },
++    { Status_SettingValueOutOfRange, STATUS_DESCRIPTION("Setting value is out of range.") },
++    { Status_SettingDisabled, STATUS_DESCRIPTION("Setting is not available, possibly due to limited driver support.") },
++    { Status_GcodeInvalidRetractPosition, STATUS_DESCRIPTION("Retract position is less than drill depth.") },
++    { Status_IllegalHomingConfiguration, STATUS_DESCRIPTION("Attempt to home two auto squared axes at the same time.") },
+ #if COMPATIBILITY_LEVEL <= 1
+-    { Status_GCodeCoordSystemLocked, "Coordinate system is locked." },
++    { Status_GCodeCoordSystemLocked, STATUS_DESCRIPTION("Coordinate system is locked.") },
+ #endif
+-    { Status_UnexpectedDemarcation, "Unexpected file demarcation." },
+-    { Status_AuxiliaryPortUnavailable, "Port is not available" },
++    { Status_UnexpectedDemarcation, STATUS_DESCRIPTION("Unexpected file demarcation.") },
++    { Status_AuxiliaryPortUnavailable, STATUS_DESCRIPTION("Port is not available") },
+ #if NGC_EXPRESSIONS_ENABLE
+-    { Status_ExpressionUknownOp, "Unknown operation found in expression." },
+-    { Status_ExpressionDivideByZero, "Divide by zero in expression attempted." },
+-    { Status_ExpressionArgumentOutOfRange, "Too large or too small argrument provided." },
+-    { Status_ExpressionInvalidArgument, "Argument is not valid for the operation" },
+-    { Status_ExpressionSyntaxError, "Expression is not valid." },
+-    { Status_ExpressionInvalidResult, "Either NAN (not a number) or infinity was returned from expression." },
++    { Status_ExpressionUknownOp, STATUS_DESCRIPTION("Unknown operation found in expression.") },
++    { Status_ExpressionDivideByZero, STATUS_DESCRIPTION("Divide by zero in expression attempted.") },
++    { Status_ExpressionArgumentOutOfRange, STATUS_DESCRIPTION("Too large or too small argrument provided.") },
++    { Status_ExpressionInvalidArgument, STATUS_DESCRIPTION("Argument is not valid for the operation") },
++    { Status_ExpressionSyntaxError, STATUS_DESCRIPTION("Expression is not valid.") },
++    { Status_ExpressionInvalidResult, STATUS_DESCRIPTION("Either NAN (not a number) or infinity was returned from expression.") },
+ #endif
+-    { Status_AuthenticationRequired, "Authentication required." },
+-    { Status_AccessDenied, "Access denied." },
+-    { Status_NotAllowedCriticalEvent, "Not allowed while critical event is active." },
++    { Status_AuthenticationRequired, STATUS_DESCRIPTION("Authentication required.") },
++    { Status_AccessDenied, STATUS_DESCRIPTION("Access denied.") },
++    { Status_NotAllowedCriticalEvent, STATUS_DESCRIPTION("Not allowed while critical event is active.") },
+ #if NGC_EXPRESSIONS_ENABLE
+-    { Status_FlowControlNotExecutingMacro, "Flow statement only allowed in filesystem macro." },
+-    { Status_FlowControlSyntaxError, "Unknown flow statement." },
+-    { Status_FlowControlStackOverflow, "Stack overflow while executing flow statement." },
+-    { Status_FlowControlOutOfMemory, "Out of memory while executing flow statement." },
++    { Status_FlowControlNotExecutingMacro, STATUS_DESCRIPTION("Flow statement only allowed in filesystem macro.") },
++    { Status_FlowControlSyntaxError, STATUS_DESCRIPTION("Unknown flow statement.") },
++    { Status_FlowControlStackOverflow, STATUS_DESCRIPTION("Stack overflow while executing flow statement.") },
++    { Status_FlowControlOutOfMemory, STATUS_DESCRIPTION("Out of memory while executing flow statement.") },
+ #endif
+-    { Status_FileOpenFailed, "Could not open file." },
+-    { Status_UserException, "User defined error occured." },
+-    { Status_AuxiliaryPortUnusable, "Port is not usable." },
+-    { Status_ToolInSPindle, "Tool in spindle." },
+-    { Status_NoToolInSPindle, "No tool in spindle." }
++    { Status_FileOpenFailed, STATUS_DESCRIPTION("Could not open file.") },
++    { Status_UserException, STATUS_DESCRIPTION("User defined error occured.") },
++    { Status_AuxiliaryPortUnusable, STATUS_DESCRIPTION("Port is not usable.") },
++    { Status_ToolInSPindle, STATUS_DESCRIPTION("Tool in spindle.") },
++    { Status_NoToolInSPindle, STATUS_DESCRIPTION("No tool in spindle.") }
+ };
+ 
+ static error_details_t details = {

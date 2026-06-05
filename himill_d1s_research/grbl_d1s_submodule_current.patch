@@ -1,0 +1,1071 @@
+diff --git i/alarms.c w/alarms.c
+index 96962f7..093366d 100644
+--- i/alarms.c
++++ w/alarms.c
+@@ -26,28 +26,34 @@
+ #include "grbl.h"
+ #include "core_handlers.h"
+ 
++#ifdef NO_ALARM_ERROR_DESCRIPTIONS
++  #define ALARM_DESCRIPTION(text) NULL
++#else
++  #define ALARM_DESCRIPTION(text) text
++#endif
++
+ PROGMEM static const alarm_detail_t alarm_detail[] = {
+-    { Alarm_HardLimit, "Hard limit has been triggered. Machine position is likely lost due to sudden halt. Re-homing is highly recommended." },
+-    { Alarm_SoftLimit, "Soft limit alarm. G-code motion target exceeds machine travel. Machine position retained. Alarm may be safely unlocked." },
+-    { Alarm_AbortCycle, "Reset/E-stop while in motion. Machine position is likely lost due to sudden halt. Re-homing is highly recommended." },
+-    { Alarm_ProbeFailInitial, "Probe fail. Probe is not in the expected initial state before starting probe cycle when G38.2 and G38.3 is not triggered and G38.4 and G38.5 is triggered." },
+-    { Alarm_ProbeFailContact, "Probe fail. Probe did not contact the workpiece within the programmed travel for G38.2 and G38.4." },
+-    { Alarm_HomingFailReset, "Homing fail. The active homing cycle was reset." },
+-    { Alarm_HomingFailDoor, "Homing fail. Safety door was opened during homing cycle." },
+-    { Alarm_FailPulloff, "Homing fail. Pull off travel failed to clear limit switch. Try increasing pull-off setting or check wiring." },
+-    { Alarm_HomingFailApproach, "Homing fail. Could not find limit switch within search distances. Try increasing max travel, decreasing pull-off distance, or check wiring." },
+-    { Alarm_EStop, "EStop asserted. Clear and reset" },
+-    { Alarm_HomingRequired, "Homing required. Execute homing command ($H) to continue." },
+-    { Alarm_LimitsEngaged, "Limit switch engaged. Clear before continuing." },
+-    { Alarm_ProbeProtect, "Probe protection triggered. Clear before continuing." },
+-    { Alarm_Spindle, "Spindle at speed timeout. Clear before continuing." },
+-    { Alarm_HomingFailAutoSquaringApproach, "Homing fail. Could not find second limit switch for auto squared axis within search distances. Try increasing max travel, decreasing pull-off distance, or check wiring." },
+-    { Alarm_SelftestFailed, "Power on selftest (POS) failed." },
+-    { Alarm_MotorFault, "Motor fault." },
+-    { Alarm_HomingFail, "Homing fail. Bad configuration." },
+-    { Alarm_ModbusException, "Modbus exception. Timeout or message error." },
+-    { Alarm_ExpanderException, "I/O expander communication failed." },
+-    { Alarm_NVS_Failed, "Non Volatile Storage (EEPROM) failure." }
++    { Alarm_HardLimit, ALARM_DESCRIPTION("Hard limit has been triggered. Machine position is likely lost due to sudden halt. Re-homing is highly recommended.") },
++    { Alarm_SoftLimit, ALARM_DESCRIPTION("Soft limit alarm. G-code motion target exceeds machine travel. Machine position retained. Alarm may be safely unlocked.") },
++    { Alarm_AbortCycle, ALARM_DESCRIPTION("Reset/E-stop while in motion. Machine position is likely lost due to sudden halt. Re-homing is highly recommended.") },
++    { Alarm_ProbeFailInitial, ALARM_DESCRIPTION("Probe fail. Probe is not in the expected initial state before starting probe cycle when G38.2 and G38.3 is not triggered and G38.4 and G38.5 is triggered.") },
++    { Alarm_ProbeFailContact, ALARM_DESCRIPTION("Probe fail. Probe did not contact the workpiece within the programmed travel for G38.2 and G38.4.") },
++    { Alarm_HomingFailReset, ALARM_DESCRIPTION("Homing fail. The active homing cycle was reset.") },
++    { Alarm_HomingFailDoor, ALARM_DESCRIPTION("Homing fail. Safety door was opened during homing cycle.") },
++    { Alarm_FailPulloff, ALARM_DESCRIPTION("Homing fail. Pull off travel failed to clear limit switch. Try increasing pull-off setting or check wiring.") },
++    { Alarm_HomingFailApproach, ALARM_DESCRIPTION("Homing fail. Could not find limit switch within search distances. Try increasing max travel, decreasing pull-off distance, or check wiring.") },
++    { Alarm_EStop, ALARM_DESCRIPTION("EStop asserted. Clear and reset") },
++    { Alarm_HomingRequired, ALARM_DESCRIPTION("Homing required. Execute homing command ($H) to continue.") },
++    { Alarm_LimitsEngaged, ALARM_DESCRIPTION("Limit switch engaged. Clear before continuing.") },
++    { Alarm_ProbeProtect, ALARM_DESCRIPTION("Probe protection triggered. Clear before continuing.") },
++    { Alarm_Spindle, ALARM_DESCRIPTION("Spindle at speed timeout. Clear before continuing.") },
++    { Alarm_HomingFailAutoSquaringApproach, ALARM_DESCRIPTION("Homing fail. Could not find second limit switch for auto squared axis within search distances. Try increasing max travel, decreasing pull-off distance, or check wiring.") },
++    { Alarm_SelftestFailed, ALARM_DESCRIPTION("Power on selftest (POS) failed.") },
++    { Alarm_MotorFault, ALARM_DESCRIPTION("Motor fault.") },
++    { Alarm_HomingFail, ALARM_DESCRIPTION("Homing fail. Bad configuration.") },
++    { Alarm_ModbusException, ALARM_DESCRIPTION("Modbus exception. Timeout or message error.") },
++    { Alarm_ExpanderException, ALARM_DESCRIPTION("I/O expander communication failed.") },
++    { Alarm_NVS_Failed, ALARM_DESCRIPTION("Non Volatile Storage (EEPROM) failure.") }
+ };
+ 
+ static alarm_details_t details = {
+diff --git i/errors.c w/errors.c
+index 6606930..7383571 100644
+--- i/errors.c
++++ w/errors.c
+@@ -26,90 +26,96 @@
+ #include "grbl.h"
+ #include "core_handlers.h"
+ 
++#ifdef NO_ALARM_ERROR_DESCRIPTIONS
++  #define STATUS_DESCRIPTION(text) NULL
++#else
++  #define STATUS_DESCRIPTION(text) text
++#endif
++
+ PROGMEM static const status_detail_t status_detail[] = {
+     { Status_OK, NULL },
+-    { Status_ExpectedCommandLetter, "G-code words consist of a letter and a value. Letter was not found." },
+-    { Status_BadNumberFormat, "Missing the expected G-code word value or numeric value format is not valid." },
+-    { Status_InvalidStatement, "'$' system command was not recognized or supported." },
+-    { Status_NegativeValue, "Negative value received for an expected positive value." },
+-    { Status_HomingDisabled, "Homing cycle failure. Homing is not configured via settings." },
+-    { Status_SettingStepPulseMin, "Step pulse time must be greater or equal to 2 microseconds." },
+-    { Status_SettingReadFail, "A settings read failed. Auto-restoring affected settings to default values." },
+-    { Status_IdleError, "'$' command cannot be used unless controller state is IDLE. Ensures smooth operation during a job." },
+-    { Status_SystemGClock, "G-code commands are locked out during alarm or jog state." },
+-    { Status_SoftLimitError, "Soft limits cannot be enabled without homing also enabled." },
+-    { Status_Overflow, "Max characters per line exceeded. Received command line was not executed." },
+-    { Status_MaxStepRateExceeded, "'$' setting value cause the step rate to exceed the maximum supported." },
+-    { Status_CheckDoor, "Safety door detected as opened and door state initiated." },
+-    { Status_LineLengthExceeded, "Build info or startup line exceeded line length limit. Line not stored." },
+-    { Status_TravelExceeded, "Jog target exceeds machine travel. Jog command has been ignored." },
+-    { Status_InvalidJogCommand, "Jog command has no '=' or contains prohibited g-code." },
+-    { Status_SettingDisabledLaser, "Laser mode requires PWM output." },
+-    { Status_Reset, "Reset asserted" },
+-    { Status_NonPositiveValue, "Non positive value" },
+-    { Status_GcodeUnsupportedCommand, "Unsupported or invalid g-code command found in block." },
+-    { Status_GcodeModalGroupViolation, "More than one g-code command from same modal group found in block." },
+-    { Status_GcodeUndefinedFeedRate, "Feed rate has not yet been set or is undefined." },
+-    { Status_GcodeCommandValueNotInteger, "G-code command in block requires an integer value." },
+-    { Status_GcodeAxisCommandConflict, "More than one g-code command that requires axis words found in block." },
+-    { Status_GcodeWordRepeated, "Repeated g-code word found in block." },
+-    { Status_GcodeNoAxisWords, "No axis words found in block for g-code command or current modal state which requires them." },
+-    { Status_GcodeInvalidLineNumber, "Line number value is invalid." },
+-    { Status_GcodeValueWordMissing, "G-code command is missing a required value word." },
+-    { Status_GcodeUnsupportedCoordSys, "G59.x work coordinate systems are not supported." },
+-    { Status_GcodeG53InvalidMotionMode, "G53 only allowed with G0 and G1 motion modes." },
+-    { Status_GcodeAxisWordsExist, "Axis words found in block when no command or current modal state uses them." },
+-    { Status_GcodeNoAxisWordsInPlane, "G2 and G3 arcs require at least one in-plane axis word." },
+-    { Status_GcodeInvalidTarget, "Motion command target is invalid." },
+-    { Status_GcodeArcRadiusError, "Arc radius value is invalid." },
+-    { Status_GcodeNoOffsetsInPlane, "G2 and G3 arcs require at least one in-plane offset word." },
+-    { Status_GcodeUnusedWords, "Unused value words found in block." },
+-    { Status_GcodeG43DynamicAxisError, "G43.1 dynamic tool length offset is not assigned to configured tool length axis." },
+-    { Status_GcodeIllegalToolTableEntry, "Tool number greater than max supported value or undefined tool selected." },
+-    { Status_GcodeValueOutOfRange, "Value out of range." },
+-    { Status_GcodeToolChangePending, "G-code command not allowed when tool change is pending." },
+-    { Status_GcodeSpindleNotRunning, "Spindle not running when motion commanded in CSS or spindle sync mode." },
+-    { Status_GcodeIllegalPlane, "Plane must be ZX for threading." },
+-    { Status_GcodeMaxFeedRateExceeded, "Max. feed rate exceeded." },
+-    { Status_GcodeRPMOutOfRange, "RPM out of range." },
+-    { Status_LimitsEngaged, "Only homing is allowed when a limit switch is engaged." },
+-    { Status_HomingRequired, "Home machine to continue." },
+-    { Status_GCodeToolError, "ATC: current tool is not set. Set current tool with M61." },
+-    { Status_ValueWordConflict, "Value word conflict." },
+-    { Status_SelfTestFailed, "Power on self test failed. A hard reset is required." },
+-    { Status_EStop, "Emergency stop active." },
+-    { Status_MotorFault, "Motor fault." },
+-    { Status_SettingValueOutOfRange, "Setting value is out of range." },
+-    { Status_SettingDisabled, "Setting is not available, possibly due to limited driver support." },
+-    { Status_GcodeInvalidRetractPosition, "Retract position is less than drill depth." },
+-    { Status_IllegalHomingConfiguration, "Attempt to home two auto squared axes at the same time." },
++    { Status_ExpectedCommandLetter, STATUS_DESCRIPTION("G-code words consist of a letter and a value. Letter was not found.") },
++    { Status_BadNumberFormat, STATUS_DESCRIPTION("Missing the expected G-code word value or numeric value format is not valid.") },
++    { Status_InvalidStatement, STATUS_DESCRIPTION("'$' system command was not recognized or supported.") },
++    { Status_NegativeValue, STATUS_DESCRIPTION("Negative value received for an expected positive value.") },
++    { Status_HomingDisabled, STATUS_DESCRIPTION("Homing cycle failure. Homing is not configured via settings.") },
++    { Status_SettingStepPulseMin, STATUS_DESCRIPTION("Step pulse time must be greater or equal to 2 microseconds.") },
++    { Status_SettingReadFail, STATUS_DESCRIPTION("A settings read failed. Auto-restoring affected settings to default values.") },
++    { Status_IdleError, STATUS_DESCRIPTION("'$' command cannot be used unless controller state is IDLE. Ensures smooth operation during a job.") },
++    { Status_SystemGClock, STATUS_DESCRIPTION("G-code commands are locked out during alarm or jog state.") },
++    { Status_SoftLimitError, STATUS_DESCRIPTION("Soft limits cannot be enabled without homing also enabled.") },
++    { Status_Overflow, STATUS_DESCRIPTION("Max characters per line exceeded. Received command line was not executed.") },
++    { Status_MaxStepRateExceeded, STATUS_DESCRIPTION("'$' setting value cause the step rate to exceed the maximum supported.") },
++    { Status_CheckDoor, STATUS_DESCRIPTION("Safety door detected as opened and door state initiated.") },
++    { Status_LineLengthExceeded, STATUS_DESCRIPTION("Build info or startup line exceeded line length limit. Line not stored.") },
++    { Status_TravelExceeded, STATUS_DESCRIPTION("Jog target exceeds machine travel. Jog command has been ignored.") },
++    { Status_InvalidJogCommand, STATUS_DESCRIPTION("Jog command has no '=' or contains prohibited g-code.") },
++    { Status_SettingDisabledLaser, STATUS_DESCRIPTION("Laser mode requires PWM output.") },
++    { Status_Reset, STATUS_DESCRIPTION("Reset asserted") },
++    { Status_NonPositiveValue, STATUS_DESCRIPTION("Non positive value") },
++    { Status_GcodeUnsupportedCommand, STATUS_DESCRIPTION("Unsupported or invalid g-code command found in block.") },
++    { Status_GcodeModalGroupViolation, STATUS_DESCRIPTION("More than one g-code command from same modal group found in block.") },
++    { Status_GcodeUndefinedFeedRate, STATUS_DESCRIPTION("Feed rate has not yet been set or is undefined.") },
++    { Status_GcodeCommandValueNotInteger, STATUS_DESCRIPTION("G-code command in block requires an integer value.") },
++    { Status_GcodeAxisCommandConflict, STATUS_DESCRIPTION("More than one g-code command that requires axis words found in block.") },
++    { Status_GcodeWordRepeated, STATUS_DESCRIPTION("Repeated g-code word found in block.") },
++    { Status_GcodeNoAxisWords, STATUS_DESCRIPTION("No axis words found in block for g-code command or current modal state which requires them.") },
++    { Status_GcodeInvalidLineNumber, STATUS_DESCRIPTION("Line number value is invalid.") },
++    { Status_GcodeValueWordMissing, STATUS_DESCRIPTION("G-code command is missing a required value word.") },
++    { Status_GcodeUnsupportedCoordSys, STATUS_DESCRIPTION("G59.x work coordinate systems are not supported.") },
++    { Status_GcodeG53InvalidMotionMode, STATUS_DESCRIPTION("G53 only allowed with G0 and G1 motion modes.") },
++    { Status_GcodeAxisWordsExist, STATUS_DESCRIPTION("Axis words found in block when no command or current modal state uses them.") },
++    { Status_GcodeNoAxisWordsInPlane, STATUS_DESCRIPTION("G2 and G3 arcs require at least one in-plane axis word.") },
++    { Status_GcodeInvalidTarget, STATUS_DESCRIPTION("Motion command target is invalid.") },
++    { Status_GcodeArcRadiusError, STATUS_DESCRIPTION("Arc radius value is invalid.") },
++    { Status_GcodeNoOffsetsInPlane, STATUS_DESCRIPTION("G2 and G3 arcs require at least one in-plane offset word.") },
++    { Status_GcodeUnusedWords, STATUS_DESCRIPTION("Unused value words found in block.") },
++    { Status_GcodeG43DynamicAxisError, STATUS_DESCRIPTION("G43.1 dynamic tool length offset is not assigned to configured tool length axis.") },
++    { Status_GcodeIllegalToolTableEntry, STATUS_DESCRIPTION("Tool number greater than max supported value or undefined tool selected.") },
++    { Status_GcodeValueOutOfRange, STATUS_DESCRIPTION("Value out of range.") },
++    { Status_GcodeToolChangePending, STATUS_DESCRIPTION("G-code command not allowed when tool change is pending.") },
++    { Status_GcodeSpindleNotRunning, STATUS_DESCRIPTION("Spindle not running when motion commanded in CSS or spindle sync mode.") },
++    { Status_GcodeIllegalPlane, STATUS_DESCRIPTION("Plane must be ZX for threading.") },
++    { Status_GcodeMaxFeedRateExceeded, STATUS_DESCRIPTION("Max. feed rate exceeded.") },
++    { Status_GcodeRPMOutOfRange, STATUS_DESCRIPTION("RPM out of range.") },
++    { Status_LimitsEngaged, STATUS_DESCRIPTION("Only homing is allowed when a limit switch is engaged.") },
++    { Status_HomingRequired, STATUS_DESCRIPTION("Home machine to continue.") },
++    { Status_GCodeToolError, STATUS_DESCRIPTION("ATC: current tool is not set. Set current tool with M61.") },
++    { Status_ValueWordConflict, STATUS_DESCRIPTION("Value word conflict.") },
++    { Status_SelfTestFailed, STATUS_DESCRIPTION("Power on self test failed. A hard reset is required.") },
++    { Status_EStop, STATUS_DESCRIPTION("Emergency stop active.") },
++    { Status_MotorFault, STATUS_DESCRIPTION("Motor fault.") },
++    { Status_SettingValueOutOfRange, STATUS_DESCRIPTION("Setting value is out of range.") },
++    { Status_SettingDisabled, STATUS_DESCRIPTION("Setting is not available, possibly due to limited driver support.") },
++    { Status_GcodeInvalidRetractPosition, STATUS_DESCRIPTION("Retract position is less than drill depth.") },
++    { Status_IllegalHomingConfiguration, STATUS_DESCRIPTION("Attempt to home two auto squared axes at the same time.") },
+ #if COMPATIBILITY_LEVEL <= 1
+-    { Status_GCodeCoordSystemLocked, "Coordinate system is locked." },
++    { Status_GCodeCoordSystemLocked, STATUS_DESCRIPTION("Coordinate system is locked.") },
+ #endif
+-    { Status_UnexpectedDemarcation, "Unexpected file demarcation." },
+-    { Status_AuxiliaryPortUnavailable, "Port is not available" },
++    { Status_UnexpectedDemarcation, STATUS_DESCRIPTION("Unexpected file demarcation.") },
++    { Status_AuxiliaryPortUnavailable, STATUS_DESCRIPTION("Port is not available") },
+ #if NGC_EXPRESSIONS_ENABLE
+-    { Status_ExpressionUknownOp, "Unknown operation found in expression." },
+-    { Status_ExpressionDivideByZero, "Divide by zero in expression attempted." },
+-    { Status_ExpressionArgumentOutOfRange, "Too large or too small argrument provided." },
+-    { Status_ExpressionInvalidArgument, "Argument is not valid for the operation" },
+-    { Status_ExpressionSyntaxError, "Expression is not valid." },
+-    { Status_ExpressionInvalidResult, "Either NAN (not a number) or infinity was returned from expression." },
++    { Status_ExpressionUknownOp, STATUS_DESCRIPTION("Unknown operation found in expression.") },
++    { Status_ExpressionDivideByZero, STATUS_DESCRIPTION("Divide by zero in expression attempted.") },
++    { Status_ExpressionArgumentOutOfRange, STATUS_DESCRIPTION("Too large or too small argrument provided.") },
++    { Status_ExpressionInvalidArgument, STATUS_DESCRIPTION("Argument is not valid for the operation") },
++    { Status_ExpressionSyntaxError, STATUS_DESCRIPTION("Expression is not valid.") },
++    { Status_ExpressionInvalidResult, STATUS_DESCRIPTION("Either NAN (not a number) or infinity was returned from expression.") },
+ #endif
+-    { Status_AuthenticationRequired, "Authentication required." },
+-    { Status_AccessDenied, "Access denied." },
+-    { Status_NotAllowedCriticalEvent, "Not allowed while critical event is active." },
++    { Status_AuthenticationRequired, STATUS_DESCRIPTION("Authentication required.") },
++    { Status_AccessDenied, STATUS_DESCRIPTION("Access denied.") },
++    { Status_NotAllowedCriticalEvent, STATUS_DESCRIPTION("Not allowed while critical event is active.") },
+ #if NGC_EXPRESSIONS_ENABLE
+-    { Status_FlowControlNotExecutingMacro, "Flow statement only allowed in filesystem macro." },
+-    { Status_FlowControlSyntaxError, "Unknown flow statement." },
+-    { Status_FlowControlStackOverflow, "Stack overflow while executing flow statement." },
+-    { Status_FlowControlOutOfMemory, "Out of memory while executing flow statement." },
++    { Status_FlowControlNotExecutingMacro, STATUS_DESCRIPTION("Flow statement only allowed in filesystem macro.") },
++    { Status_FlowControlSyntaxError, STATUS_DESCRIPTION("Unknown flow statement.") },
++    { Status_FlowControlStackOverflow, STATUS_DESCRIPTION("Stack overflow while executing flow statement.") },
++    { Status_FlowControlOutOfMemory, STATUS_DESCRIPTION("Out of memory while executing flow statement.") },
+ #endif
+-    { Status_FileOpenFailed, "Could not open file." },
+-    { Status_UserException, "User defined error occured." },
+-    { Status_AuxiliaryPortUnusable, "Port is not usable." },
+-    { Status_ToolInSPindle, "Tool in spindle." },
+-    { Status_NoToolInSPindle, "No tool in spindle." }
++    { Status_FileOpenFailed, STATUS_DESCRIPTION("Could not open file.") },
++    { Status_UserException, STATUS_DESCRIPTION("User defined error occured.") },
++    { Status_AuxiliaryPortUnusable, STATUS_DESCRIPTION("Port is not usable.") },
++    { Status_ToolInSPindle, STATUS_DESCRIPTION("Tool in spindle.") },
++    { Status_NoToolInSPindle, STATUS_DESCRIPTION("No tool in spindle.") }
+ };
+ 
+ static error_details_t details = {
+diff --git i/gcode.c w/gcode.c
+index bda6249..7621dbe 100644
+--- i/gcode.c
++++ w/gcode.c
+@@ -314,6 +314,102 @@ inline static float gc_get_block_offset (parser_block_t *gc_block, uint_fast8_t
+     return gc_block->modal.g5x_offset.data.coord.values[idx] + gc_state.g92_offset.coord.values[idx] + gc_state.modal.tool_length_offset[idx];
+ }
+ 
++#ifdef ROTATION_ENABLE
++
++inline static bool gc_xy_rotation_active (coord_system_data_t *offset)
++{
++    return offset->rotation != 0.0f;
++}
++
++inline static plane_t gc_xy_rotation_plane (void)
++{
++    return (plane_t){ .axis_0 = X_AXIS, .axis_1 = Y_AXIS, .axis_linear = Z_AXIS };
++}
++
++static void gc_machine_to_work (coord_data_t *target, coord_system_data_t *offset)
++{
++    uint_fast8_t idx = N_AXIS;
++
++    do {
++        idx--;
++        target->values[idx] -= offset->coord.values[idx] + gc_state.g92_offset.coord.values[idx] + gc_state.modal.tool_length_offset[idx];
++    } while(idx);
++
++    if(gc_xy_rotation_active(offset))
++        rotate(target, gc_xy_rotation_plane(), -offset->rotation);
++}
++
++static void gc_work_to_machine (coord_data_t *target, coord_system_data_t *offset)
++{
++    uint_fast8_t idx = N_AXIS;
++
++    if(gc_xy_rotation_active(offset))
++        rotate(target, gc_xy_rotation_plane(), offset->rotation);
++
++    do {
++        idx--;
++        target->values[idx] += offset->coord.values[idx] + gc_state.g92_offset.coord.values[idx] + gc_state.modal.tool_length_offset[idx];
++    } while(idx);
++}
++
++static void gc_current_work_position (coord_data_t *target, coord_system_data_t *offset)
++{
++    memcpy(target, gc_state.position, sizeof(coord_data_t));
++    gc_machine_to_work(target, offset);
++}
++
++static void gc_solve_wcs_origin_from_work (coord_data_t *origin, coord_data_t *machine, coord_data_t *work, coord_system_data_t *offset)
++{
++    coord_data_t rotated_work;
++    uint_fast8_t idx = N_AXIS;
++
++    memcpy(&rotated_work, work, sizeof(coord_data_t));
++
++    if(gc_xy_rotation_active(offset))
++        rotate(&rotated_work, gc_xy_rotation_plane(), offset->rotation);
++
++    do {
++        idx--;
++        origin->values[idx] = machine->values[idx] - gc_state.g92_offset.coord.values[idx] - gc_state.modal.tool_length_offset[idx] - rotated_work.values[idx];
++    } while(idx);
++}
++
++static void gc_solve_g92_from_work (coord_data_t *g92, coord_data_t *machine, coord_data_t *work, coord_system_data_t *offset)
++{
++    coord_data_t rotated_work;
++    uint_fast8_t idx = N_AXIS;
++
++    memcpy(&rotated_work, work, sizeof(coord_data_t));
++
++    if(gc_xy_rotation_active(offset))
++        rotate(&rotated_work, gc_xy_rotation_plane(), offset->rotation);
++
++    do {
++        idx--;
++        g92->values[idx] = machine->values[idx] - offset->coord.values[idx] - gc_state.modal.tool_length_offset[idx] - rotated_work.values[idx];
++    } while(idx);
++}
++
++#endif
++
++void gc_get_work_position (float *position, const float *machine_position, bool real_time)
++{
++    coord_data_t wpos;
++    uint_fast8_t idx = N_AXIS;
++
++    do {
++        idx--;
++        wpos.values[idx] = machine_position[idx] - gc_get_offset(idx, real_time);
++    } while(idx);
++
++#ifdef ROTATION_ENABLE
++    if(gc_xy_rotation_active(&gc_state.modal.g5x_offset.data))
++        rotate(&wpos, gc_xy_rotation_plane(), -gc_state.modal.g5x_offset.data.rotation);
++#endif
++
++    memcpy(position, wpos.values, sizeof(coord_data_t));
++}
++
+ FLASHMEM void gc_set_tool_offset (tool_offset_mode_t mode, uint_fast8_t idx, int32_t offset)
+ {
+     bool tlo_changed = false;
+@@ -1216,16 +1312,6 @@ status_code_t gc_execute_block (char *block)
+ 
+ #endif // NGC_EXPRESSIONS_ENABLE
+ 
+-#ifdef ROTATION_ENABLE
+-
+-    PROGMEM static const axes_signals_t rotate_axes[] = {
+-        { .x = On, .y = On },
+-        { .x = On, .z = On },
+-        { .y = On, .z = On }
+-    };
+-
+-#endif
+-
+     char *message = NULL;
+     status_code_t status = Status_OK;
+     struct {
+@@ -2943,18 +3029,46 @@ status_code_t gc_execute_block (char *block)
+   #endif
+ #endif
+                     // Pre-calculate the coordinate data changes.
+-                    idx = N_AXIS;
+-                    do { // Axes indices are consistent, so loop may be used.
+-                        // Update axes defined only in block. Always in machine coordinates. Can change non-active system.
+-                        if(bit_istrue(axis_words.mask, bit(--idx))) {
+-                            if(gc_block.values.l == 20)
+-                                // L20: Update coordinate system axis at current position (with modifiers) with programmed value
+-                                // WPos = MPos - WCS - G92 - TLO  ->  WCS = MPos - G92 - TLO - WPos
+-                                coord_system.data.coord.values[idx] = gc_state.position[idx] - gc_block.values.xyz[idx] - gc_state.g92_offset.coord.values[idx] - gc_state.modal.tool_length_offset[idx];
+-                            else // L2: Update coordinate system axis to programmed value.
+-                                coord_system.data.coord.values[idx] = gc_block.values.xyz[idx];
+-                        } // else, keep current stored value.
+-                    } while(idx);
++#ifdef ROTATION_ENABLE
++                    if(gc_block.values.l == 20 && gc_xy_rotation_active(&coord_system.data)) {
++                        coord_data_t machine_position, requested_work, origin;
++                        axes_signals_t update_axes = axis_words;
++
++                        memcpy(&machine_position, gc_state.position, sizeof(coord_data_t));
++                        gc_current_work_position(&requested_work, &coord_system.data);
++
++                        idx = N_AXIS;
++                        do {
++                            if(bit_istrue(axis_words.mask, bit(--idx)))
++                                requested_work.values[idx] = gc_block.values.xyz[idx];
++                        } while(idx);
++
++                        gc_solve_wcs_origin_from_work(&origin, &machine_position, &requested_work, &coord_system.data);
++
++                        if(axis_words.x || axis_words.y)
++                            update_axes.x = update_axes.y = On;
++
++                        idx = N_AXIS;
++                        do {
++                            if(bit_istrue(update_axes.mask, bit(--idx)))
++                                coord_system.data.coord.values[idx] = origin.values[idx];
++                        } while(idx);
++                    } else
++#endif
++                    {
++                        idx = N_AXIS;
++                        do { // Axes indices are consistent, so loop may be used.
++                            // Update axes defined only in block. Always in machine coordinates. Can change non-active system.
++                            if(bit_istrue(axis_words.mask, bit(--idx))) {
++                                if(gc_block.values.l == 20)
++                                    // L20: Update coordinate system axis at current position (with modifiers) with programmed value
++                                    // WPos = MPos - WCS - G92 - TLO  ->  WCS = MPos - G92 - TLO - WPos
++                                    coord_system.data.coord.values[idx] = gc_state.position[idx] - gc_block.values.xyz[idx] - gc_state.g92_offset.coord.values[idx] - gc_state.modal.tool_length_offset[idx];
++                                else // L2: Update coordinate system axis to programmed value.
++                                    coord_system.data.coord.values[idx] = gc_block.values.xyz[idx];
++                            } // else, keep current stored value.
++                        } while(idx);
++                    }
+                     break;
+ #ifdef __GNUC__
+ #pragma GCC diagnostic pop
+@@ -3018,16 +3132,46 @@ status_code_t gc_execute_block (char *block)
+             if (!axis_words.mask)
+                 RETURN(Status_GcodeNoAxisWords); // [No axis words]
+ 
+-            // Update axes defined only in block. Offsets current system to defined value. Does not update when
+-            // active coordinate system is selected, but is still active unless G92.1 disables it.
+-            idx = N_AXIS;
+-            do { // Axes indices are consistent, so loop may be used.
+-                if(bit_istrue(axis_words.mask, bit(--idx))) {
+-            // WPos = MPos - WCS - G92 - TLO  ->  G92 = MPos - WCS - TLO - WPos
+-                    gc_block.values.xyz[idx] = gc_state.position[idx] - gc_block.modal.g5x_offset.data.coord.values[idx] - gc_block.values.xyz[idx] - gc_state.modal.tool_length_offset[idx];
+-                } else
+-                    gc_block.values.xyz[idx] = gc_state.g92_offset.coord.values[idx];
+-            } while(idx);
++#ifdef ROTATION_ENABLE
++            if(gc_xy_rotation_active(&gc_block.modal.g5x_offset.data)) {
++                coord_data_t machine_position, requested_work, g92_offset;
++                axes_signals_t update_axes = axis_words;
++
++                memcpy(&machine_position, gc_state.position, sizeof(coord_data_t));
++                gc_current_work_position(&requested_work, &gc_block.modal.g5x_offset.data);
++
++                idx = N_AXIS;
++                do {
++                    if(bit_istrue(axis_words.mask, bit(--idx)))
++                        requested_work.values[idx] = gc_block.values.xyz[idx];
++                } while(idx);
++
++                gc_solve_g92_from_work(&g92_offset, &machine_position, &requested_work, &gc_block.modal.g5x_offset.data);
++
++                if(axis_words.x || axis_words.y)
++                    update_axes.x = update_axes.y = On;
++
++                idx = N_AXIS;
++                do {
++                    idx--;
++                    gc_block.values.xyz[idx] = bit_istrue(update_axes.mask, bit(idx))
++                                                 ? g92_offset.values[idx]
++                                                 : gc_state.g92_offset.coord.values[idx];
++                } while(idx);
++            } else
++#endif
++            {
++                // Update axes defined only in block. Offsets current system to defined value. Does not update when
++                // active coordinate system is selected, but is still active unless G92.1 disables it.
++                idx = N_AXIS;
++                do { // Axes indices are consistent, so loop may be used.
++                    if(bit_istrue(axis_words.mask, bit(--idx))) {
++                // WPos = MPos - WCS - G92 - TLO  ->  G92 = MPos - WCS - TLO - WPos
++                        gc_block.values.xyz[idx] = gc_state.position[idx] - gc_block.modal.g5x_offset.data.coord.values[idx] - gc_block.values.xyz[idx] - gc_state.modal.tool_length_offset[idx];
++                    } else
++                        gc_block.values.xyz[idx] = gc_state.g92_offset.coord.values[idx];
++                } while(idx);
++            }
+             break;
+             
+ #if ENABLE_ACCELERATION_PROFILES
+@@ -3051,64 +3195,64 @@ status_code_t gc_execute_block (char *block)
+             if((axis_words.mask || gc_block.modal.motion == MotionMode_CwArc || gc_block.modal.motion == MotionMode_CcwArc) && axis_command != AxisCommand_ToolLengthOffset) { // TLO block any axis command.
+ 
+ #ifdef ROTATION_ENABLE
+-                axes_signals_t r_axes, r_around;
+-                uint_fast8_t idx_0, idx_1;
+-                if(!gc_parser_flags.jog_motion && (r_axes.mask = (gc_block.modal.g5x_offset.data.rotation == 0.0f ? 0 : (axis_words.mask & (r_around.mask = rotate_axes[gc_block.modal.plane_select].mask))))) {
+-
+-                    if(r_axes.mask != r_around.mask) {
+-                        point_3d_t pos;
+-                        memcpy(&pos, gc_state.position, sizeof(point_3d_t));
+-                        idx_0 = ffs(r_axes.mask) - 1;
+-                        idx_1 = ffs((r_axes.mask ^ r_around.mask) & r_around.mask) - 1;
+-                        pos.values[idx_0] -= (gc_state.g92_offset.coord.values[idx_0] + gc_state.modal.tool_length_offset[idx_0]);
+-                        pos.values[idx_1] -= (gc_state.g92_offset.coord.values[idx_1] + gc_state.modal.tool_length_offset[idx_1]);
+-                        rotate((coord_data_t *)&pos, plane, -gc_block.modal.g5x_offset.data.rotation);
+-                        gc_block.values.xyz[idx_1] = pos.values[idx_1] - gc_block.modal.g5x_offset.data.coord.values[idx_1];
+-                        axis_words.mask |= r_around.mask;
+-                    } else {
+-                        idx_0 = ffs(r_around.mask) - 1;
+-                        bit_false(r_around.mask, bit(idx));
+-                        idx_1 = ffs(r_around.mask) - 1;
+-                    }
++                if(gc_xy_rotation_active(&gc_block.modal.g5x_offset.data) &&
++                    gc_block.non_modal_command != NonModal_AbsoluteOverride) {
+ 
+-                    gc_block.values.xyz[plane.axis_0] += gc_block.modal.g5x_offset.data.coord.values[plane.axis_0];
+-                    gc_block.values.xyz[plane.axis_1] += gc_block.modal.g5x_offset.data.coord.values[plane.axis_1];
++                    coord_data_t target;
+ 
+-                    rotate((coord_data_t *)gc_block.values.xyz, plane, gc_block.modal.g5x_offset.data.rotation);
+-                }
++                    gc_current_work_position(&target, &gc_block.modal.g5x_offset.data);
++
++                    idx = N_AXIS;
++                    do {
++                        if(bit_istrue(axis_words.mask, bit(--idx))) {
++#if LATHE_UVW_OPTION
++  #if N_AXIS > 3
++                            if(idx <= Z_AXIS && bit_istrue(gc_block.words.mask, bit(idx + 21))) {
++  #else
++                            if(bit_istrue(gc_block.words.mask, bit(idx + 21))) {
++  #endif
++                                bit_false(gc_block.words.mask, bit(idx + 21));
++                                target.values[idx] += gc_block.values.uvw[idx];
++                            } else
+ #endif
++                            if(gc_block.modal.distance_incremental)
++                                target.values[idx] += gc_block.values.xyz[idx];
++                            else
++                                target.values[idx] = gc_block.values.xyz[idx];
++                        }
++                    } while(idx);
+ 
+-                idx = N_AXIS;
++                    gc_work_to_machine(&target, &gc_block.modal.g5x_offset.data);
++                    memcpy(gc_block.values.xyz, target.values, sizeof(coord_data_t));
++                } else
++#endif
++                {
++                    idx = N_AXIS;
+ 
+-                do { // Axes indices are consistent, so loop may be used to save flash space.
+-                    if(bit_isfalse(axis_words.mask, bit(--idx)))
+-                        gc_block.values.xyz[idx] = gc_state.position[idx]; // No axis word in block. Keep same axis position.
+-                    else if(gc_block.non_modal_command != NonModal_AbsoluteOverride) {
+-                        // Update specified value according to distance mode or ignore if absolute override is active.
+-                        // NOTE: G53 is never active with G28/30 since they are in the same modal group.
+-                        // Apply coordinate offsets based on distance mode.
++                    do { // Axes indices are consistent, so loop may be used to save flash space.
++                        if(bit_isfalse(axis_words.mask, bit(--idx)))
++                            gc_block.values.xyz[idx] = gc_state.position[idx]; // No axis word in block. Keep same axis position.
++                        else if(gc_block.non_modal_command != NonModal_AbsoluteOverride) {
++                            // Update specified value according to distance mode or ignore if absolute override is active.
++                            // NOTE: G53 is never active with G28/30 since they are in the same modal group.
++                            // Apply coordinate offsets based on distance mode.
+ #if LATHE_UVW_OPTION
+   #if N_AXIS > 3
+-                        if(idx <= Z_AXIS && bit_istrue(axis_words.mask, bit(idx)) && bit_istrue(gc_block.words.mask, bit(idx + 21))) {
++                            if(idx <= Z_AXIS && bit_istrue(axis_words.mask, bit(idx)) && bit_istrue(gc_block.words.mask, bit(idx + 21))) {
+   #else
+-                        if(bit_istrue(axis_words.mask, bit(idx)) && bit_istrue(gc_block.words.mask, bit(idx + 21))) {
++                            if(bit_istrue(axis_words.mask, bit(idx)) && bit_istrue(gc_block.words.mask, bit(idx + 21))) {
+   #endif
+-                            bit_false(gc_block.words.mask, bit(idx + 21));
+-                            gc_block.values.xyz[idx] = gc_state.position[idx] + gc_block.values.uvw[idx];
+-                        } else
++                                bit_false(gc_block.words.mask, bit(idx + 21));
++                                gc_block.values.xyz[idx] = gc_state.position[idx] + gc_block.values.uvw[idx];
++                            } else
+ #endif
+-                        if(gc_block.modal.distance_incremental)
+-                            gc_block.values.xyz[idx] += gc_state.position[idx];
+-                        else {  // Absolute mode
+-#ifdef ROTATION_ENABLE
+-                            if(r_axes.mask && (idx == idx_0 || idx == idx_1))
+-                                gc_block.values.xyz[idx] += gc_state.g92_offset.coord.values[idx] + gc_state.modal.tool_length_offset[idx];
++                            if(gc_block.modal.distance_incremental)
++                                gc_block.values.xyz[idx] += gc_state.position[idx];
+                             else
+-#endif
+                                 gc_block.values.xyz[idx] += gc_get_block_offset(&gc_block, idx);
+                         }
+-                    }
+-                } while(idx);
++                    } while(idx);
++                }
+             }
+ 
+             // Check remaining non-modal commands for errors.
+@@ -3172,6 +3316,30 @@ status_code_t gc_execute_block (char *block)
+ 
+         gc_parser_flags.motion_mode_changed = gc_block.modal.motion != gc_state.modal.motion;
+ 
++#ifdef ROTATION_ENABLE
++        if(gc_xy_rotation_active(&gc_block.modal.g5x_offset.data)) {
++            switch(gc_block.modal.motion) {
++
++                case MotionMode_Seek:
++                case MotionMode_Linear:
++                case MotionMode_ProbeToward:
++                case MotionMode_ProbeTowardNoError:
++                case MotionMode_ProbeAway:
++                case MotionMode_ProbeAwayNoError:
++                    break;
++
++                case MotionMode_CwArc:
++                case MotionMode_CcwArc:
++                    if(gc_block.modal.plane_select != PlaneSelect_XY)
++                        RETURN(Status_GcodeIllegalPlane);
++                    break;
++
++                default:
++                    RETURN(Status_GcodeUnsupportedCommand);
++            }
++        }
++#endif
++
+         if (gc_block.modal.motion == MotionMode_Seek) {
+             // [G0 Errors]: Axis letter not configured or without real value (done.)
+             // Axis words are optional. If missing, set axis command flag to ignore execution.
+@@ -4255,30 +4423,7 @@ status_code_t gc_execute_block (char *block)
+                 // Update system coordinate system if currently active.
+                 if(gc_state.modal.g5x_offset.id == coord_system.id) {
+ 
+-#ifdef ROTATION_ENABLE
+-
+-                    if(gc_state.modal.g5x_offset.data.rotation != 0.0f &&
+-                        gc_state.modal.g5x_offset.data.rotation != coord_system.data.rotation) {
+-
+-                        gc_state.position[plane.axis_0] -= (gc_state.g92_offset.coord.values[plane.axis_0] + gc_state.modal.tool_length_offset[plane.axis_0]);
+-                        gc_state.position[plane.axis_1] -= (gc_state.g92_offset.coord.values[plane.axis_1] + gc_state.modal.tool_length_offset[plane.axis_1]);
+-                        rotate((coord_data_t *)&gc_state.position, plane, -gc_block.modal.g5x_offset.data.rotation);
+-                        gc_state.position[plane.axis_0] -= gc_block.modal.g5x_offset.data.coord.values[plane.axis_0];
+-                        gc_state.position[plane.axis_1] -= gc_block.modal.g5x_offset.data.coord.values[plane.axis_1];
+-                    }
+-
+                     memcpy(&gc_state.modal.g5x_offset.data, &coord_system.data, sizeof(coord_system_data_t));
+-
+-                    if(gc_state.modal.g5x_offset.data.rotation != 0.0f) {
+-                        gc_state.position[plane.axis_0] += gc_block.modal.g5x_offset.data.coord.values[plane.axis_0];
+-                        gc_state.position[plane.axis_1] += gc_block.modal.g5x_offset.data.coord.values[plane.axis_1];
+-                        rotate((coord_data_t *)gc_state.position, plane, gc_state.modal.g5x_offset.data.rotation);
+-                        gc_state.position[plane.axis_0] += (gc_state.g92_offset.coord.values[plane.axis_0] + gc_state.modal.tool_length_offset[plane.axis_0]);
+-                        gc_state.position[plane.axis_1] += (gc_state.g92_offset.coord.values[plane.axis_1] + gc_state.modal.tool_length_offset[plane.axis_1]);
+-                    }
+-#else
+-                    memcpy(&gc_state.modal.g5x_offset.data, &coord_system.data, sizeof(coord_system_data_t));
+-#endif
+                     system_flag_wco_change();
+                 }
+             }
+diff --git i/gcode.h w/gcode.h
+index 961e03a..941518b 100644
+--- i/gcode.h
++++ w/gcode.h
+@@ -752,6 +752,9 @@ float *gc_get_scaling (void);
+ // Get current axis offset.
+ float gc_get_offset (uint_fast8_t idx, bool real_time);
+ 
++// Get work position from machine position.
++void gc_get_work_position (float *position, const float *machine_position, bool real_time);
++
+ void gc_clear_offset (coord_system_id_t id);
+ 
+ char *gc_coord_system_to_str (coord_system_id_t id);
+diff --git i/ioports.c w/ioports.c
+index 909d9f0..d4e5cf0 100644
+--- i/ioports.c
++++ w/ioports.c
+@@ -1429,12 +1429,14 @@ PROGMEM static const setting_detail_t ioport_settings[] = {
+ //    { Settings_IoPort_OD_Enable, Group_AuxPorts, "I/O Port outputs as open drain", NULL, Format_Bitfield, digital.out.port_names, NULL, NULL, Setting_NonCoreFn, aux_set_value, aux_get_value, is_setting_available }
+ };
+ 
++#ifndef NO_SETTINGS_DESCRIPTIONS
+ PROGMEM static const setting_descr_t ioport_settings_descr[] = {
+     { Settings_IoPort_InvertIn, "Invert IOPort inputs." },
+ //    { Settings_IoPort_Pullup_Disable, "Disable IOPort input pullups." },
+     { Settings_IoPort_InvertOut, "Invert IOPort output." },
+ //    { Settings_IoPort_OD_Enable, "Set IOPort outputs as open drain (OD)." }
+ };
++#endif
+ 
+ FLASHMEM static bool config_probe_pins (pin_function_t function, gpio_in_config_t *config)
+ {
+@@ -1625,8 +1627,13 @@ FLASHMEM void ioports_add_settings (driver_settings_load_ptr settings_loaded, se
+         .n_groups = sizeof(ioport_groups) / sizeof(setting_group_detail_t),
+         .settings = ioport_settings,
+         .n_settings = sizeof(ioport_settings) / sizeof(setting_detail_t),
++#ifndef NO_SETTINGS_DESCRIPTIONS
+         .descriptions = ioport_settings_descr,
+         .n_descriptions = sizeof(ioport_settings_descr) / sizeof(setting_descr_t),
++#else
++        .descriptions = NULL,
++        .n_descriptions = 0,
++#endif
+         .save = settings_write_global
+     };
+ 
+diff --git i/protocol.c w/protocol.c
+index ad00169..3e1f53f 100644
+--- i/protocol.c
++++ w/protocol.c
+@@ -38,6 +38,10 @@
+ #define RT_QUEUE_SIZE 16 // must be a power of 2
+ #endif
+ 
++#ifndef NVS_SYNC_IDLE_DELAY_MS
++#define NVS_SYNC_IDLE_DELAY_MS 0
++#endif
++
+ // Define line flags. Includes comment type tracking and line overflow detection.
+ typedef union {
+     uint8_t value;
+@@ -56,6 +60,21 @@ static char line[LINE_BUFFER_SIZE]; // Line to be executed. Zero-terminated.
+ static char xcommand[LINE_BUFFER_SIZE];
+ static bool keep_rt_commands = false;
+ 
++#if NVSDATA_BUFFER_ENABLE && NVS_SYNC_IDLE_DELAY_MS
++static uint32_t nvs_sync_not_before = 0;
++
++static void nvs_sync_delay_from_stream (void)
++{
++    if(hal.get_elapsed_ticks)
++        nvs_sync_not_before = hal.get_elapsed_ticks() + NVS_SYNC_IDLE_DELAY_MS;
++}
++
++static bool nvs_sync_delay_elapsed (void)
++{
++    return !hal.get_elapsed_ticks || (int32_t)(hal.get_elapsed_ticks() - nvs_sync_not_before) >= 0;
++}
++#endif
++
+ static void protocol_exec_rt_suspend (sys_state_t state);
+ 
+ // add gcode to execute not originating from normal input stream
+@@ -209,6 +228,10 @@ bool protocol_main_loop (void)
+         // initial filtering by removing leading spaces and control characters.
+         while((c = hal.stream.read()) != SERIAL_NO_DATA) {
+ 
++#if NVSDATA_BUFFER_ENABLE && NVS_SYNC_IDLE_DELAY_MS
++            nvs_sync_delay_from_stream();
++#endif
++
+             if(c == ASCII_CAN) {
+ 
+                 eol = xcommand[0] = '\0';
+@@ -410,7 +433,11 @@ bool protocol_execute_realtime (void)
+             protocol_exec_rt_suspend(state);
+ 
+ #if NVSDATA_BUFFER_ENABLE
+-        if((state == STATE_IDLE || (state & (STATE_ALARM|STATE_ESTOP))) && settings_dirty.is_dirty && !gc_state.file_run)
++        if((state == STATE_IDLE || (state & (STATE_ALARM|STATE_ESTOP))) && settings_dirty.is_dirty && !gc_state.file_run
++#if NVS_SYNC_IDLE_DELAY_MS
++            && nvs_sync_delay_elapsed()
++#endif
++        )
+             nvs_buffer_sync_physical();
+ #endif
+     }
+@@ -424,6 +451,10 @@ FLASHMEM static void protocol_poll_cmd (void)
+ 
+     if((c = hal.stream.read()) != SERIAL_NO_DATA) {
+ 
++#if NVSDATA_BUFFER_ENABLE && NVS_SYNC_IDLE_DELAY_MS
++        nvs_sync_delay_from_stream();
++#endif
++
+         if ((c == '\n') || (c == '\r')) { // End of line reached
+             line[char_counter] = '\0';
+             gc_state.last_error = *line == '\0' ? Status_OK : (*line == '$' ? system_execute_line(line) : Status_SystemGClock);
+diff --git i/report.c w/report.c
+index 6a9cbb4..a9095ad 100644
+--- i/report.c
++++ w/report.c
+@@ -309,7 +309,11 @@ FLASHMEM static void report_init_message (stream_write_ptr write)
+     hal.stream.report.override_counter = hal.stream.report.wco_counter = 0;
+ 
+ #if COMPATIBILITY_LEVEL == 0
++#ifdef NO_COMMAND_HELP
++    write(ASCII_EOL "GrblHAL " GRBL_VERSION ASCII_EOL);
++#else
+     write(ASCII_EOL "GrblHAL " GRBL_VERSION " ['$' or '$HELP' for help]" ASCII_EOL);
++#endif
+ #else
+     write(ASCII_EOL "Grbl " GRBL_VERSION " ['$' for help]" ASCII_EOL);
+ #endif
+@@ -1277,8 +1281,8 @@ void report_realtime_status (stream_write_ptr stream_write, status_report_tracki
+         // Apply work coordinate offsets and tool length offset to current position.
+         for(idx = 0; idx < N_AXIS; idx++) {
+             wco[idx] = gc_get_offset(idx, true);
+-            print_position[idx] -= wco[idx];
+         }
++        gc_get_work_position(print_position, print_position, true);
+     }
+ 
+     // Report position
+diff --git i/settings.c w/settings.c
+index abaa6f2..6ded4ad 100644
+--- i/settings.c
++++ w/settings.c
+@@ -2327,6 +2327,7 @@ PROGMEM static const setting_detail_t setting_detail[] = {
+      { Setting_SubroutineOptions, Group_General, "Subroutine options", NULL, Format_Bitfield, "Prescan for internal M98 subroutines", NULL, NULL, Setting_IsExtendedFn, set_suboptions, get_int, is_setting_available }
+ };
+ 
++#ifndef NO_SETTINGS_DESCRIPTIONS
+ PROGMEM static const setting_descr_t setting_descr[] = {
+     { Setting_PulseMicroseconds, "Step pulse length in microseconds.\\n"
+                                  "Minimum depends on the processor and is typically in the range of 1 - 2.5.\\n\\n"
+@@ -2541,6 +2542,7 @@ PROGMEM static const setting_descr_t setting_descr[] = {
+     { Setting_MotorFaultsInvert, "Invert motor fault inputs" }
+ */
+ };
++#endif
+ 
+ static setting_details_t global_settings = {
+     .is_core = true,
+@@ -2548,8 +2550,13 @@ static setting_details_t global_settings = {
+     .n_groups = sizeof(setting_group_detail) / sizeof(setting_group_detail_t),
+     .settings = setting_detail,
+     .n_settings = sizeof(setting_detail) / sizeof(setting_detail_t),
++#ifndef NO_SETTINGS_DESCRIPTIONS
+     .descriptions = setting_descr,
+     .n_descriptions = sizeof(setting_descr) / sizeof(setting_descr_t),
++#else
++    .descriptions = NULL,
++    .n_descriptions = 0,
++#endif
+     .save = _settings_write_global
+ };
+ 
+@@ -2629,6 +2636,31 @@ FLASHMEM bool settings_read_startup_line (uint8_t idx, char *line)
+ }
+ 
+ // Write selected coordinate data to persistent storage.
++#ifdef ROTATION_ENABLE
++static float settings_normalize_rotation (float rotation)
++{
++    if(!isfinite(rotation))
++        return 0.0f;
++
++    rotation = fmodf(rotation + (float)M_PI, 2.0f * (float)M_PI);
++    if(rotation <= 0.0f)
++        rotation += 2.0f * (float)M_PI;
++
++    rotation -= (float)M_PI;
++
++    if(fabsf(rotation) < 0.000001f)
++        return 0.0f;
++
++    return rotation <= (-(float)M_PI + 0.000001f) ? (float)M_PI : rotation;
++}
++
++static void settings_normalize_coord_rotation (coord_system_id_t id, coord_system_data_t *data)
++{
++    if(id < N_WorkCoordinateSystems)
++        data->rotation = settings_normalize_rotation(data->rotation);
++}
++#endif
++
+ FLASHMEM void settings_write_coord_data (coord_system_id_t id, coord_system_data_t *data)
+ {
+     assert(id <= N_CoordinateSystems);
+@@ -2637,6 +2669,10 @@ FLASHMEM void settings_write_coord_data (coord_system_id_t id, coord_system_data
+     protocol_buffer_synchronize();
+ #endif
+ 
++#ifdef ROTATION_ENABLE
++    settings_normalize_coord_rotation(id, data);
++#endif
++
+     if(grbl.on_wco_saved)
+         grbl.on_wco_saved(id, data);
+ 
+@@ -2656,6 +2692,10 @@ FLASHMEM bool settings_read_coord_data (coord_system_id_t id, coord_system_data_
+         return false;
+     }
+ 
++#ifdef ROTATION_ENABLE
++    settings_normalize_coord_rotation(id, data);
++#endif
++
+     return true;
+ }
+ 
+diff --git i/system.c w/system.c
+index a9d3580..e6625ba 100644
+--- i/system.c
++++ w/system.c
+@@ -913,29 +913,37 @@ FLASHMEM const char *help_reboot (const char *cmd)
+ 
+ /*! \brief Command dispatch table
+  */
++#ifdef NO_COMMAND_HELP
++  #define COMMAND_HELP_STR(text) { .str = NULL }
++  #define COMMAND_HELP_FN(fn) { .str = NULL }
++#else
++  #define COMMAND_HELP_STR(text) { .str = text }
++  #define COMMAND_HELP_FN(fn) { .fn = fn }
++#endif
++
+ PROGMEM static const sys_command_t sys_commands[] = {
+-    { "G", output_parser_state, { .noargs = On, .allow_blocking = On }, { .str = "output parser state" } },
+-    { "J", jog, {}, { .str = "$J=<gcode> - jog machine" } },
+-    { "#", output_ngc_parameters, { .allow_blocking = On }, {
+-        .str = "output offsets, tool table, probing and home position"
++    { "G", output_parser_state, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("output parser state") },
++    { "J", jog, {}, COMMAND_HELP_STR("$J=<gcode> - jog machine") },
++    { "#", output_ngc_parameters, { .allow_blocking = On }, COMMAND_HELP_STR(
++        "output offsets, tool table, probing and home position"
+ #if NGC_PARAMETERS_ENABLE
+      ASCII_EOL "$#=<n> - output value for parameter <n>"
+ #endif
+-    } },
+-    { "$", output_settings, { .allow_blocking = On }, {
+-        .str = "$<n> - output setting <n> value"
++    ) },
++    { "$", output_settings, { .allow_blocking = On }, COMMAND_HELP_STR(
++        "$<n> - output setting <n> value"
+      ASCII_EOL "$<n>=<value> - assign <value> to settings <n>"
+      ASCII_EOL "$$ - output all setting values"
+      ASCII_EOL "$$=<n> - output setting details for setting <n>"
+-    } },
+-    { "+", output_all_settings, { .allow_blocking = On }, { .str = "output all setting values" } },
+-    { "SED", output_setting_description, { .allow_blocking = On }, { .str = "$SED=<n> - output settings description for setting <n>" } },
+-    { "B", toggle_block_delete, { .noargs = On, .help_fn = On }, { .fn = help_switches } },
+-    { "S", toggle_single_block, { .noargs = On, .help_fn = On }, { .fn = help_switches } },
+-    { "O", toggle_optional_stop, { .noargs = On, .help_fn = On }, { .fn = help_switches } },
+-    { "C", check_mode, { .noargs = On }, { .str = "enable check mode, <Reset> to exit" } },
+-    { "X", disable_lock, {}, { .str = "unlock machine" } },
+-    { "H", home, { .help_fn = On }, { .fn = help_homing } },
++    ) },
++    { "+", output_all_settings, { .allow_blocking = On }, COMMAND_HELP_STR("output all setting values") },
++    { "SED", output_setting_description, { .allow_blocking = On }, COMMAND_HELP_STR("$SED=<n> - output settings description for setting <n>") },
++    { "B", toggle_block_delete, { .noargs = On, .help_fn = On }, COMMAND_HELP_FN(help_switches) },
++    { "S", toggle_single_block, { .noargs = On, .help_fn = On }, COMMAND_HELP_FN(help_switches) },
++    { "O", toggle_optional_stop, { .noargs = On, .help_fn = On }, COMMAND_HELP_FN(help_switches) },
++    { "C", check_mode, { .noargs = On }, COMMAND_HELP_STR("enable check mode, <Reset> to exit") },
++    { "X", disable_lock, {}, COMMAND_HELP_STR("unlock machine") },
++    { "H", home, { .help_fn = On }, COMMAND_HELP_FN(help_homing) },
+     { "HX", home_x },
+     { "HY", home_y },
+     { "HZ", home_z },
+@@ -957,49 +965,49 @@ PROGMEM static const sys_command_t sys_commands[] = {
+ #ifdef W_AXIS
+     { "HW", home_w },
+ #endif
+-    { "HSS", report_current_home_signal_state, { .noargs = On, .allow_blocking = On }, { .str = "report homing switches status" } },
+-    { "HELP", output_help, { .allow_blocking = On }, {
+-        .str = "$HELP - output help topics"
++    { "HSS", report_current_home_signal_state, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("report homing switches status") },
++    { "HELP", output_help, { .allow_blocking = On }, COMMAND_HELP_STR(
++        "$HELP - output help topics"
+      ASCII_EOL "$HELP <topic> - output help for <topic>"
+-    } },
+-    { "SPINDLES", enumerate_spindles, { .noargs = On, .allow_blocking = On }, { .str = "enumerate spindles, human readable" } },
+-    { "SPINDLESH", enumerate_spindles_mr, { .noargs = On, .allow_blocking = On }, { .str = "enumerate spindles, machine readable" } },
+-    { "SLP", enter_sleep, { .noargs = On }, { .str = "enter sleep mode" } },
+-    { "TLR", set_tool_reference, { .noargs = On }, { .str = "set tool offset reference" } },
+-    { "TPW", tool_probe_workpiece, { .noargs = On }, { .str = "probe tool plate" } },
+-    { "I", build_info, { .allow_blocking = On }, {
+-        .str = "output system information"
++    ) },
++    { "SPINDLES", enumerate_spindles, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate spindles, human readable") },
++    { "SPINDLESH", enumerate_spindles_mr, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate spindles, machine readable") },
++    { "SLP", enter_sleep, { .noargs = On }, COMMAND_HELP_STR("enter sleep mode") },
++    { "TLR", set_tool_reference, { .noargs = On }, COMMAND_HELP_STR("set tool offset reference") },
++    { "TPW", tool_probe_workpiece, { .noargs = On }, COMMAND_HELP_STR("probe tool plate") },
++    { "I", build_info, { .allow_blocking = On }, COMMAND_HELP_STR(
++        "output system information"
+ #if !DISABLE_BUILD_INFO_WRITE_COMMAND
+      ASCII_EOL "$I=<string> - set build info string"
+ #endif
+-    } },
+-    { "I+", output_all_build_info, { .noargs = On, .allow_blocking = On }, { .str = "output extended system information" } },
+-    { "RST", settings_reset, { .allow_blocking = On, .help_fn = On }, { .fn = help_rst } },
+-    { "N", output_startup_lines, { .noargs = On, .allow_blocking = On }, { .str = "output startup lines" } },
+-    { "N0", set_startup_line0, {}, { .str = "N0=<gcode> - set startup line 0" } },
+-    { "N1", set_startup_line1, {}, { .str = "N1=<gcode> - set startup line 1" } },
+-    { "EA", enumerate_alarms, { .noargs = On, .allow_blocking = On }, { .str = "enumerate alarms" } },
+-    { "EAG", enumerate_alarms_grblformatted, { .noargs = On, .allow_blocking = On }, { .str = "enumerate alarms, Grbl formatted" } },
+-    { "EE", enumerate_errors, { .noargs = On, .allow_blocking = On }, { .str = "enumerate status codes" } },
+-    { "EEG", enumerate_errors_grblformatted, { .noargs = On, .allow_blocking = On }, { .str = "enumerate status codes, Grbl formatted" } },
+-    { "EG", enumerate_groups, { .noargs = On, .allow_blocking = On }, { .str = "enumerate setting groups" } },
+-    { "ES", enumerate_settings, { .noargs = On, .allow_blocking = On }, { .str = "enumerate settings" } },
+-    { "ESG", enumerate_settings_grblformatted, { .noargs = On, .allow_blocking = On }, { .str = "enumerate settings, Grbl formatted" } },
+-    { "ESH", enumerate_settings_halformatted, { .noargs = On, .allow_blocking = On }, { .str = "enumerate settings, grblHAL formatted" } },
+-    { "E*", enumerate_all, { .noargs = On, .allow_blocking = On }, { .str = "enumerate alarms, status codes and settings" } },
+-    { "PINS", report_pins, { .noargs = On, .allow_blocking = On, .help_fn = On }, { .fn = help_pins } },
+-    { "PINSTATE", report_pin_states, { .noargs = On, .allow_blocking = On, .help_fn = On }, { .fn = help_pin_state } },
+-    { "PORTS", report_uart_ports, { .noargs = On, .allow_blocking = On }, { .str = "enumerate serial (UART) ports" } },
+-    { "LEV", report_last_signals_event, { .noargs = On, .allow_blocking = On }, { .str = "output last control signal events" } },
+-    { "LIM", report_current_limit_state, { .noargs = On, .allow_blocking = On }, { .str = "output current limit pins" } },
+-    { "SD", report_spindle_data, { .help_fn = On }, { .fn = help_spindle } },
+-    { "SR", spindle_reset_data, { .help_fn = On }, { .fn = help_spindle } },
+-    { "SDS", report_stepper_status, { .noargs = On, .allow_blocking = On, .help_fn = On }, { .fn = help_steppers } },
+-    { "REBOOT", reboot_system, { .noargs = On, .allow_blocking = On, .help_fn = On }, { .fn = help_reboot } },
+-    { "RTC", rtc_action, { .allow_blocking = On, .help_fn = On }, { .fn = help_rtc } },
+-    { "DWNGRD", settings_downgrade, { .noargs = On, .allow_blocking = On }, { .str = "toggle setting flags for downgrade" } },
++    ) },
++    { "I+", output_all_build_info, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("output extended system information") },
++    { "RST", settings_reset, { .allow_blocking = On, .help_fn = On }, COMMAND_HELP_FN(help_rst) },
++    { "N", output_startup_lines, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("output startup lines") },
++    { "N0", set_startup_line0, {}, COMMAND_HELP_STR("N0=<gcode> - set startup line 0") },
++    { "N1", set_startup_line1, {}, COMMAND_HELP_STR("N1=<gcode> - set startup line 1") },
++    { "EA", enumerate_alarms, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate alarms") },
++    { "EAG", enumerate_alarms_grblformatted, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate alarms, Grbl formatted") },
++    { "EE", enumerate_errors, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate status codes") },
++    { "EEG", enumerate_errors_grblformatted, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate status codes, Grbl formatted") },
++    { "EG", enumerate_groups, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate setting groups") },
++    { "ES", enumerate_settings, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate settings") },
++    { "ESG", enumerate_settings_grblformatted, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate settings, Grbl formatted") },
++    { "ESH", enumerate_settings_halformatted, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate settings, grblHAL formatted") },
++    { "E*", enumerate_all, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate alarms, status codes and settings") },
++    { "PINS", report_pins, { .noargs = On, .allow_blocking = On, .help_fn = On }, COMMAND_HELP_FN(help_pins) },
++    { "PINSTATE", report_pin_states, { .noargs = On, .allow_blocking = On, .help_fn = On }, COMMAND_HELP_FN(help_pin_state) },
++    { "PORTS", report_uart_ports, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("enumerate serial (UART) ports") },
++    { "LEV", report_last_signals_event, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("output last control signal events") },
++    { "LIM", report_current_limit_state, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("output current limit pins") },
++    { "SD", report_spindle_data, { .help_fn = On }, COMMAND_HELP_FN(help_spindle) },
++    { "SR", spindle_reset_data, { .help_fn = On }, COMMAND_HELP_FN(help_spindle) },
++    { "SDS", report_stepper_status, { .noargs = On, .allow_blocking = On, .help_fn = On }, COMMAND_HELP_FN(help_steppers) },
++    { "REBOOT", reboot_system, { .noargs = On, .allow_blocking = On, .help_fn = On }, COMMAND_HELP_FN(help_reboot) },
++    { "RTC", rtc_action, { .allow_blocking = On, .help_fn = On }, COMMAND_HELP_FN(help_rtc) },
++    { "DWNGRD", settings_downgrade, { .noargs = On, .allow_blocking = On }, COMMAND_HELP_STR("toggle setting flags for downgrade") },
+ #ifdef DEBUG
+-    { "Q", output_memmap, { .noargs = On }, { .str = "output NVS memory allocation" } },
++    { "Q", output_memmap, { .noargs = On }, COMMAND_HELP_STR("output NVS memory allocation") },
+ #endif
+ };
+ 
+diff --git i/tool_change.c w/tool_change.c
+index 4235853..c11d692 100644
+--- i/tool_change.c
++++ w/tool_change.c
+@@ -156,6 +156,8 @@ FLASHMEM static bool restore (void)
+ 
+         if(!settings.flags.no_restore_position_after_M6) {
+             previous.values[plane.axis_linear] += gc_get_offset(plane.axis_linear, false);
++            if(sys.soft_limits.mask)
++                grbl.apply_travel_limits(previous.values, NULL, &sys.work_envelope);
+             mc_line(previous.values, &plan_data);
+         }
+     }
+diff --git i/vfs.c w/vfs.c
+index 679c7d6..d73a1ff 100644
+--- i/vfs.c
++++ w/vfs.c
+@@ -591,8 +591,6 @@ bool vfs_mount (const char *path, const vfs_t *fs, vfs_st_mode_t mode)
+         root.mode = mode;
+     } else if((mount = (vfs_mount_t *)calloc(1, sizeof(vfs_mount_t)))) {
+ 
+-        struct tm tm;
+-
+         strcpy(mount->path, path);
+         if(mount->path[strlen(path) - 1] != '/')
+             strcat(mount->path, "/");
+@@ -600,6 +598,8 @@ bool vfs_mount (const char *path, const vfs_t *fs, vfs_st_mode_t mode)
+         mount->vfs = fs;
+         mount->mode = mode;
+         mount->next = NULL;
++#ifndef VFS_NO_MTIME
++        struct tm tm;
+         if(hal.rtc.get_datetime && hal.rtc.get_datetime(&tm)) {
+ #ifdef ESP_PLATFORM
+             mount->st_mtim = mktime(&tm);
+@@ -607,6 +607,7 @@ bool vfs_mount (const char *path, const vfs_t *fs, vfs_st_mode_t mode)
+             mount->st_mtime = mktime(&tm);
+ #endif
+         }
++#endif
+ 
+         vfs_mount_t *lmount = &root;
+ 

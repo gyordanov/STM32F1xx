@@ -1,0 +1,26 @@
+diff --git i/fs_fatfs.c w/fs_fatfs.c
+index 851b283..f1ccf70 100644
+--- i/fs_fatfs.c
++++ w/fs_fatfs.c
+@@ -282,6 +282,13 @@ FLASHMEM static int fs_stat (const char *filename, vfs_stat_t *st)
+     }
+ 
+     if(vfs_errno == 0) {
++#ifdef FATFS_NO_MTIME
++#ifdef ESP_PLATFORM
++        st->st_mtim = (time_t)0;
++#else
++        st->st_mtime = (time_t)0;
++#endif
++#else
+         struct tm tm  = {
+             .tm_sec  = (f.ftime & 0x1f) << 1,
+             .tm_min  = (f.ftime >> 5) & 0x3f,
+@@ -294,6 +301,7 @@ FLASHMEM static int fs_stat (const char *filename, vfs_stat_t *st)
+         st->st_mtim = mktime(&tm);
+ #else
+         st->st_mtime = mktime(&tm);
++#endif
+ #endif
+     }
+ 

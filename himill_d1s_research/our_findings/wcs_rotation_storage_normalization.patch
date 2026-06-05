@@ -1,0 +1,58 @@
+diff --git a/settings.c b/settings.c
+index abaa6f2..6ded4ad 100644
+--- a/settings.c
++++ b/settings.c
+@@ -2629,6 +2636,31 @@ FLASHMEM bool settings_read_startup_line (uint8_t idx, char *line)
+ }
+ 
+ // Write selected coordinate data to persistent storage.
++#ifdef ROTATION_ENABLE
++static float settings_normalize_rotation (float rotation)
++{
++    if(!isfinite(rotation))
++        return 0.0f;
++
++    rotation = fmodf(rotation + (float)M_PI, 2.0f * (float)M_PI);
++    if(rotation <= 0.0f)
++        rotation += 2.0f * (float)M_PI;
++
++    rotation -= (float)M_PI;
++
++    if(fabsf(rotation) < 0.000001f)
++        return 0.0f;
++
++    return rotation <= (-(float)M_PI + 0.000001f) ? (float)M_PI : rotation;
++}
++
++static void settings_normalize_coord_rotation (coord_system_id_t id, coord_system_data_t *data)
++{
++    if(id < N_WorkCoordinateSystems)
++        data->rotation = settings_normalize_rotation(data->rotation);
++}
++#endif
++
+ FLASHMEM void settings_write_coord_data (coord_system_id_t id, coord_system_data_t *data)
+ {
+     assert(id <= N_CoordinateSystems);
+@@ -2637,6 +2669,10 @@ FLASHMEM void settings_write_coord_data (coord_system_id_t id, coord_system_data
+     protocol_buffer_synchronize();
+ #endif
+ 
++#ifdef ROTATION_ENABLE
++    settings_normalize_coord_rotation(id, data);
++#endif
++
+     if(grbl.on_wco_saved)
+         grbl.on_wco_saved(id, data);
+ 
+@@ -2656,6 +2692,10 @@ FLASHMEM bool settings_read_coord_data (coord_system_id_t id, coord_system_data_
+         return false;
+     }
+ 
++#ifdef ROTATION_ENABLE
++    settings_normalize_coord_rotation(id, data);
++#endif
++
+     return true;
+ }
+ 

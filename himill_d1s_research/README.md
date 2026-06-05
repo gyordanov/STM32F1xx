@@ -29,6 +29,10 @@ starting point for any future debugging session.
   - `platformio.ini`
 - `our_findings/` — write-ups generated during this work
 - `disassembly/` — staging area for Ghidra projects, additional notes
+- `grbl_d1s_submodule_current.patch`, `keypad_d1s_submodule_current.patch`,
+  `sdcard_d1s_submodule_current.patch` — current local submodule diffs kept
+  in the parent repo so the D1S firmware can be rebuilt without depending
+  on pushed submodule forks.
 - `grblhal_setting_descriptions.json` — exported `setting_descr_t`
   defaults for sender-side fallback when firmware is built with
   `NO_SETTINGS_DESCRIPTIONS`; keeps preprocessor-gated variants and
@@ -505,7 +509,7 @@ The grblHAL feature flag `NGC_EXPRESSIONS_ENABLE` (parameter expressions
 like `#1 = 5` and `[#1 + 2]`) now fits without disabling RGB, macros,
 MPG, SD card, rotation, or the 4 KB EEPROM/NVS reserve.
 
-Final tested build, 2026-05-03:
+Current tested build, 2026-06-05:
 
 - `NO_SETTINGS_DESCRIPTIONS=1` wraps the large core `setting_descr[]`
   table in `grbl/settings.c` and registers no core description table.
@@ -516,12 +520,17 @@ Final tested build, 2026-05-03:
   paragraph for core settings. Sender-side fallback text is the right
   place for this.
 - No LTO is used.
-- Size: `text=219364`, `data=4348`, `bss=35592`,
-  `firmware.bin=223716`.
-- Real app budget: `0x37000` / 225,280 bytes, so slack is 1,564 bytes.
+- `SDCARD_ENABLE=2` is used: SD/FatFs is read-write and grblHAL's
+  YMODEM receiver remains available for USB-only SD uploads.
+- Size: `text=218236`, `data=4244`, `bss=39048`,
+  `firmware.bin=222484`.
+- Real app budget: `0x37000` / 225,280 bytes, so slack is 2,796 bytes.
 - IRQ sanity check passed: `USB_LP_CAN1_RX0_IRQHandler`,
   `SysTick_Handler`, `TIM2_IRQHandler`, `USART2_IRQHandler`, and
   `UART4_IRQHandler` all resolve to real handlers, not `Default_Handler`.
+- `tools/check_d1s_irq_vectors.py .pio/build/himill_d1s/firmware.elf`
+  performs this ELF/vector-table check; `pio run -e himill_d1s` runs it
+  automatically as a post-build guard.
 
 Rejected / cautionary build paths:
 
@@ -539,6 +548,14 @@ Rejected / cautionary build paths:
   `USB_LP_CAN1_RX0_IRQHandler`, `SysTick_Handler`, `TIM2_IRQHandler`,
   `USART2_IRQHandler`, and `UART4_IRQHandler` resolved to the startup
   file's weak `Default_Handler` instead of the real C handlers.
+- Reproduced on 2026-06-05 against the current D1S tree with a scratch
+  config adding `-flto` and `-Wl,--allow-multiple-definition`: the LTO
+  ELF shrank to `text=204256`, `data=4224`, `bss=35768`, but the vector
+  check failed because every critical handler above was a weak symbol at
+  `Default_Handler` (`0x08030534` in that build).
+- Scratch attempts to keep those handlers with `--undefined=` linker
+  flags and with `used, externally_visible` function attributes did not
+  change the result; the startup weak aliases still won under LTO.
 - A follow-up scratch build used D1S-only non-LTO IRQ wrappers so those
   vector names resolved to real handlers. Once the real handlers were
   retained, the all-features image no longer fit: linker overflow was

@@ -1,0 +1,30 @@
+diff --git i/vfs.c w/vfs.c
+index 679c7d6..d73a1ff 100644
+--- i/vfs.c
++++ w/vfs.c
+@@ -591,8 +591,6 @@ bool vfs_mount (const char *path, const vfs_t *fs, vfs_st_mode_t mode)
+         root.mode = mode;
+     } else if((mount = (vfs_mount_t *)calloc(1, sizeof(vfs_mount_t)))) {
+ 
+-        struct tm tm;
+-
+         strcpy(mount->path, path);
+         if(mount->path[strlen(path) - 1] != '/')
+             strcat(mount->path, "/");
+@@ -600,6 +598,8 @@ bool vfs_mount (const char *path, const vfs_t *fs, vfs_st_mode_t mode)
+         mount->vfs = fs;
+         mount->mode = mode;
+         mount->next = NULL;
++#ifndef VFS_NO_MTIME
++        struct tm tm;
+         if(hal.rtc.get_datetime && hal.rtc.get_datetime(&tm)) {
+ #ifdef ESP_PLATFORM
+             mount->st_mtim = mktime(&tm);
+@@ -607,6 +607,7 @@ bool vfs_mount (const char *path, const vfs_t *fs, vfs_st_mode_t mode)
+             mount->st_mtime = mktime(&tm);
+ #endif
+         }
++#endif
+ 
+         vfs_mount_t *lmount = &root;
+ 

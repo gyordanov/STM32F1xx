@@ -1,0 +1,34 @@
+diff --git i/macros.c w/macros.c
+index 9d32141..99a71b7 100644
+--- i/macros.c
++++ w/macros.c
+@@ -476,6 +476,7 @@ PROGMEM static const setting_detail_t macro_settings[] = {
+ #endif
+ };
+ 
++#ifndef NO_SETTINGS_DESCRIPTIONS
+ PROGMEM static const setting_descr_t macro_settings_descr[] = {
+     { Setting_MacroBase, "Macro content, separate blocks (lines) with the vertical bar character |." },
+ #if MACROS_ENABLE & 0x01
+@@ -483,6 +484,7 @@ PROGMEM static const setting_descr_t macro_settings_descr[] = {
+     { Setting_ButtonActionBase, "Action to take when the pin is triggered."  },
+ #endif
+ };
++#endif
+ 
+ // Write settings to non volatile storage (NVS).
+ static void macro_settings_save (void)
+@@ -717,8 +719,13 @@ FLASHMEM void macros_init (void)
+         .n_groups = sizeof(macro_groups) / sizeof(setting_group_detail_t),
+         .settings = macro_settings,
+         .n_settings = sizeof(macro_settings) / sizeof(setting_detail_t),
++#ifndef NO_SETTINGS_DESCRIPTIONS
+         .descriptions = macro_settings_descr,
+         .n_descriptions = sizeof(macro_settings_descr) / sizeof(setting_descr_t),
++#else
++        .descriptions = NULL,
++        .n_descriptions = 0,
++#endif
+         .save = macro_settings_save,
+         .load = macro_settings_load,
+         .restore = macro_settings_restore,

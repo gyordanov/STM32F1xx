@@ -1,0 +1,33 @@
+diff --git i/ioports.c w/ioports.c
+index 909d9f0..d4e5cf0 100644
+--- i/ioports.c
++++ w/ioports.c
+@@ -1429,12 +1429,14 @@ PROGMEM static const setting_detail_t ioport_settings[] = {
+ //    { Settings_IoPort_OD_Enable, Group_AuxPorts, "I/O Port outputs as open drain", NULL, Format_Bitfield, digital.out.port_names, NULL, NULL, Setting_NonCoreFn, aux_set_value, aux_get_value, is_setting_available }
+ };
+ 
++#ifndef NO_SETTINGS_DESCRIPTIONS
+ PROGMEM static const setting_descr_t ioport_settings_descr[] = {
+     { Settings_IoPort_InvertIn, "Invert IOPort inputs." },
+ //    { Settings_IoPort_Pullup_Disable, "Disable IOPort input pullups." },
+     { Settings_IoPort_InvertOut, "Invert IOPort output." },
+ //    { Settings_IoPort_OD_Enable, "Set IOPort outputs as open drain (OD)." }
+ };
++#endif
+ 
+ FLASHMEM static bool config_probe_pins (pin_function_t function, gpio_in_config_t *config)
+ {
+@@ -1625,8 +1627,13 @@ FLASHMEM void ioports_add_settings (driver_settings_load_ptr settings_loaded, se
+         .n_groups = sizeof(ioport_groups) / sizeof(setting_group_detail_t),
+         .settings = ioport_settings,
+         .n_settings = sizeof(ioport_settings) / sizeof(setting_detail_t),
++#ifndef NO_SETTINGS_DESCRIPTIONS
+         .descriptions = ioport_settings_descr,
+         .n_descriptions = sizeof(ioport_settings_descr) / sizeof(setting_descr_t),
++#else
++        .descriptions = NULL,
++        .n_descriptions = 0,
++#endif
+         .save = settings_write_global
+     };
+ 

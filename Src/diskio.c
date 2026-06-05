@@ -91,6 +91,18 @@ BYTE CardType;            /* b0:MMC, b1:SDC, b2:Block addressing */
 static
 BYTE PowerFlag = 0;     /* indicates if "power" is on */
 
+static volatile uint32_t diskio_diag = 0;
+
+static inline void diskio_set_diag (BYTE op, BYTE detail)
+{
+    diskio_diag = ((uint32_t)op << 24) | ((uint32_t)detail << 16) | ((uint32_t)Stat << 8) | CardType;
+}
+
+uint32_t diskio_d1s_diagnostics (void)
+{
+    return diskio_diag;
+}
+
 /*-----------------------------------------------------------------------*/
 /* Transmit a byte to MMC via SPI  (Platform dependent)                  */
 /*-----------------------------------------------------------------------*/
@@ -98,11 +110,13 @@ BYTE PowerFlag = 0;     /* indicates if "power" is on */
 static
 void xmit_spi(BYTE dat)
 {
-    hspi1.Instance->DR = dat;
-
     while(!__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_TXE));
 
-    __HAL_SPI_CLEAR_OVRFLAG(&hspi1);
+    hspi1.Instance->DR = dat;
+
+    while(!__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_RXNE));
+
+    (void)hspi1.Instance->DR;
 }
 
 
@@ -113,6 +127,8 @@ void xmit_spi(BYTE dat)
 static
 BYTE rcvr_spi (void)
 {
+    while(!__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_TXE));
+
     hspi1.Instance->DR = 0xFF; // Writing dummy data into Data register
 
     while(!__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_RXNE));
@@ -210,6 +226,8 @@ static
 void power_off (void)
 {
     PowerFlag = 0;
+    CardType = 0;
+    Stat |= STA_NOINIT;
     __HAL_SPI_DISABLE(&hspi1);
 }
 
@@ -260,10 +278,13 @@ BOOL xmit_datablock (
     BYTE token            /* Data/Stop token */
 )
 {
-    BYTE resp, wc;
+    BYTE resp, wc, ready;
 
 
-    if (wait_ready() != 0xFF) return FALSE;
+    if ((ready = wait_ready()) != 0xFF) {
+        diskio_set_diag(0xA0, ready);
+        return FALSE;
+    }
 
     xmit_spi(token);                    /* Xmit data token */
     if (token != 0xFD) {    /* Is data token */
@@ -274,9 +295,15 @@ BOOL xmit_datablock (
         } while (--wc);
         xmit_spi(0xFF);                    /* CRC (Dummy) */
         xmit_spi(0xFF);
-        resp = rcvr_spi();                /* Reveive data response */
-        if ((resp & 0x1F) != 0x05)        /* If not accepted, return with error */
+        BYTE n = 10;
+        do
+            resp = rcvr_spi();            /* Receive data response */
+        while (resp == 0xFF && --n);
+
+        if ((resp & 0x1F) != 0x05) {      /* If not accepted, return with error */
+            diskio_set_diag(0xA1, resp);
             return FALSE;
+        }
     }
 
     return TRUE;
@@ -512,28 +539,35 @@ DRESULT disk_write (
     if (Stat & STA_NOINIT) return RES_NOTRDY;
     if (Stat & STA_PROTECT) return RES_WRPRT;
 
+    diskio_diag = 0;
+
     if (!(CardType & 4)) sector *= 512;    /* Convert to byte address if needed */
 
     SELECT();            /* CS = L */
 //  __HAL_SPI_ENABLE(&hspi1);
 
     if (count == 1) {    /* Single block write */
-        if ((send_cmd(CMD24, sector) == 0)    /* WRITE_BLOCK */
+        BYTE cmdres = send_cmd(CMD24, sector);
+        if ((cmdres == 0)    /* WRITE_BLOCK */
             && xmit_datablock(buff, 0xFE))
             count = 0;
+        else if(cmdres != 0)
+            diskio_set_diag(CMD24, cmdres);
     }
     else {                /* Multiple block write */
         if (CardType & 2) {
             send_cmd(CMD55, 0); send_cmd(CMD23, count);    /* ACMD23 */
         }
-        if (send_cmd(CMD25, sector) == 0) {    /* WRITE_MULTIPLE_BLOCK */
+        BYTE cmdres = send_cmd(CMD25, sector);
+        if (cmdres == 0) {    /* WRITE_MULTIPLE_BLOCK */
             do {
                 if (!xmit_datablock(buff, 0xFC)) break;
                 buff += 512;
             } while (--count);
             if (!xmit_datablock(0, 0xFD))    /* STOP_TRAN token */
                 count = 1;
-        }
+        } else
+            diskio_set_diag(CMD25, cmdres);
     }
 
     DESELECT();            /* CS = H */
