@@ -48,6 +48,8 @@
 #define HIMILL_BOOTLOADER_BASE 0x08000000UL
 #define HIMILL_BOOTFLAG_ADDR   ((volatile uint32_t *)0x2000BFF0UL)
 #define HIMILL_BOOTFLAG_MAGIC  0xFA0505F5UL
+#define HIMILL_D1S_PLUGIN_NAME    "HIMILL_D1S"
+#define HIMILL_D1S_PLUGIN_VERSION "0.5"
 
 // STM32F103's factory-burned ROM bootloader (System Memory region).
 // Speaks standard USB DFU → dfu-util works out of the box on any OS.
@@ -64,6 +66,8 @@ static on_user_command_ptr     on_user_command;
 static on_report_options_ptr   on_report_options;
 static on_execute_realtime_ptr on_execute_realtime;
 static on_stream_changed_ptr   on_stream_changed;
+static on_report_handlers_init_ptr on_report_handlers_init;
+static status_message_ptr      on_status_message;
 
 #if RGB_LED_ENABLE == 2
 
@@ -1153,6 +1157,99 @@ static void himill_poll_buttons (sys_state_t state)
         on_execute_realtime(state);
 }
 
+#if FS_ENABLE & FS_SDCARD
+// Maximum time grblHAL will wait for ESP3D to return the shared SD bus when
+// a grblHAL-side SD command is requested.
+#define D1S_SD_TAKE_TIMEOUT_MS 1500
+
+static bool d1s_sd_suppress_status = false;
+
+static status_code_t himill_status_message (status_code_t status_code)
+{
+    if (d1s_sd_suppress_status) {
+        d1s_sd_suppress_status = false;
+        if (status_code == Status_OK || status_code == Status_Handled)
+            return Status_OK;
+    }
+
+    return on_status_message ? on_status_message(status_code) : status_code;
+}
+
+static void himill_install_status_handler (void)
+{
+    if (grbl.report.status_message != himill_status_message) {
+        on_status_message = grbl.report.status_message;
+        grbl.report.status_message = himill_status_message;
+    }
+}
+
+static void himill_report_handlers_init (void)
+{
+    if (on_report_handlers_init)
+        on_report_handlers_init();
+
+    himill_install_status_handler();
+}
+
+static bool himill_sd_job_active (void)
+{
+    // stream_is_file() only means file input is the current stream.
+    // gc_state.file_stream stays true until the SD stream job is ended,
+    // covering cycle-start waits, read-ahead/EOF gaps, buffered motion, and
+    // spindle delays that can otherwise look idle to state_get().
+    return stream_is_file() || gc_state.file_stream;
+}
+
+static bool himill_sd_reclaim_from_esp3d (void)
+{
+    if(!(mux_uart && mux_uart->write && mux_uart->read && hal.get_elapsed_ticks))
+        return false;
+
+    char line[32];
+    uint_fast8_t line_len = 0;
+    uint32_t start = hal.get_elapsed_ticks();
+
+    mux_uart_write_direct("[D1S_SD_TAKE]" ASCII_EOL);
+
+    do {
+        int32_t c;
+
+        while((c = mux_uart->read()) != SERIAL_NO_DATA) {
+            if(c == ASCII_CR || c == ASCII_LF) {
+                if(line_len == 0)
+                    continue;
+
+                line[line_len] = '\0';
+                line_len = 0;
+
+                if(!strcmp(line, "[D1S_SD_ACK]"))
+                    return true;
+
+                if(!strncmp(line, "[D1S_SD_BUSY", 12))
+                    return false;
+            } else if(line_len < (sizeof(line) - 1))
+                line[line_len++] = (char)c;
+            else
+                line_len = 0;
+        }
+
+        if(!protocol_execute_realtime())
+            return false;
+
+        hal.delay_ms(2, NULL);
+
+    } while((hal.get_elapsed_ticks() - start) < D1S_SD_TAKE_TIMEOUT_MS);
+
+    return false;
+}
+
+static status_code_t himill_sd_private_command_handled (void)
+{
+    d1s_sd_suppress_status = true;
+    return Status_OK;
+}
+#endif
+
 // Tear down the running firmware's IRQs + peripherals + clocks and hand
 // control to a bootloader at `base_addr`, leaving the MCU in a state
 // equivalent to a fresh power-on so the bootloader's SystemInit doesn't
@@ -1215,25 +1312,33 @@ static status_code_t himill_user_command (char *line)
 
         if (state_get() != STATE_IDLE)
             mux_uart_write_direct("[D1S_SD_BUSY:state]" ASCII_EOL);
-        else if (stream_is_file())
+        else if (himill_sd_job_active())
             mux_uart_write_direct("[D1S_SD_BUSY:file]" ASCII_EOL);
         else if (!sdcard_release_to_external())
             mux_uart_write_direct("[D1S_SD_BUSY:unmount]" ASCII_EOL);
         else
             mux_uart_write_direct("[D1S_SD_RDY]" ASCII_EOL);
 
-        return Status_OK;
+        return himill_sd_private_command_handled();
+    }
+
+    if (!strcmp(line, "[D1S_SD_ACK]") || !strncmp(line, "[D1S_SD_BUSY", 12)) {
+        if (mux_last_rx_owner != mux_uart)
+            return on_user_command ? on_user_command(line) : Status_Unhandled;
+
+        return himill_sd_private_command_handled();
     }
 
     if (strcmp(line, "[D1S_SD_DONE]") == 0) {
         if (mux_last_rx_owner != mux_uart)
             return on_user_command ? on_user_command(line) : Status_Unhandled;
 
-        if (!sdcard_reclaim_from_external())
-            mux_uart_write_direct("[MSG:D1S SD remount failed]" ASCII_EOL);
+        // Compatibility path for older/per-request ESPD behaviour and
+        // request-timeout cleanup. Sticky ownership is reclaimed only when
+        // grblHAL actually starts an SD operation.
         mux_uart_write_direct("[D1S_SD_ACK]" ASCII_EOL);
 
-        return Status_OK;
+        return himill_sd_private_command_handled();
     }
 #endif
 
@@ -1688,7 +1793,7 @@ static void on_report_options_himill (bool newopt)
         on_report_options(newopt);
 
     if (!newopt) {
-        hal.stream.write("[PLUGIN:HIMILL_D1S v0.4");
+        hal.stream.write("[PLUGIN:" HIMILL_D1S_PLUGIN_NAME " v" HIMILL_D1S_PLUGIN_VERSION);
         if (himill_settings.magic != HIMILL_SETTINGS_MAGIC)
             hal.stream.write(" ERR:SET");
         hal.stream.write("]" ASCII_EOL);
@@ -1716,6 +1821,10 @@ void board_init (void)
 
     on_user_command         = grbl.on_user_command;
     grbl.on_user_command    = himill_user_command;
+
+    on_report_handlers_init = grbl.on_report_handlers_init;
+    grbl.on_report_handlers_init = himill_report_handlers_init;
+    himill_install_status_handler();
 
     on_report_options       = grbl.on_report_options;
     grbl.on_report_options  = on_report_options_himill;
@@ -1767,6 +1876,10 @@ void board_init (void)
             hal.stream.reset_read_buffer   = mux_reset_read_buffer;
             hal.stream.cancel_read_buffer  = mux_cancel_read_buffer;
             hal.stream.reset_write_buffer  = mux_reset_write_buffer;
+
+#if FS_ENABLE & FS_SDCARD
+            sdcard_set_reclaim_callback(himill_sd_reclaim_from_esp3d);
+#endif
 
             // Disable grblHAL's onLinestateChanged hook by clearing
             // the flag. That hook schedules output_welcome_message
