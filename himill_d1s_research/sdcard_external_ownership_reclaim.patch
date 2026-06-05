@@ -1,0 +1,244 @@
+From 1f7c3724ac6320fa1570260edaabe9625174e6ce Mon Sep 17 00:00:00 2001
+From: Galin Yordanov <gyordanov@gmail.com>
+Date: Thu, 4 Jun 2026 21:50:37 -0500
+Subject: [PATCH] Add external SD ownership reclaim hooks
+
+---
+ fs_stream.c | 50 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ sdcard.c    | 45 ++++++++++++++++++++++++++++++++++++++++-----
+ sdcard.h    |  6 ++++++
+ 3 files changed, 96 insertions(+), 5 deletions(-)
+
+diff --git a/fs_stream.c b/fs_stream.c
+index 2c13f9b..6f4cc74 100644
+--- a/fs_stream.c
++++ b/fs_stream.c
+@@ -116,6 +116,18 @@ static line_number_t onLineNumberAssigned (line_number_t line_number);
+ static void onProgramCompleted (program_flow_t program_flow, bool check_mode);
+ //static report_t active_reports;
+ 
++#if FS_ENABLE & FS_SDCARD
++FLASHMEM static status_code_t reclaim_sdcard_if_external (void)
++{
++    if(sdcard_is_released_to_external() && !sdcard_reclaim_from_external()) {
++        report_message("SD card owned externally", Message_Warning);
++        return Status_SDNotMounted;
++    }
++
++    return Status_OK;
++}
++#endif
++
+ static file_status_t filename_valid (char *filename)
+ {
+     return strlen(filename) > 40 || strchr(filename, CMD_STATUS_REPORT) || strchr(filename, CMD_CYCLE_START) || strchr(filename, CMD_FEED_HOLD)
+@@ -294,6 +306,12 @@ static int16_t file_read (void)
+ FLASHMEM static status_code_t list_files (bool filtered)
+ {
+     char path[MAX_PATHLEN] = "", name[BUFLEN]; // NB! also used as work area when recursing directories
++#if FS_ENABLE & FS_SDCARD
++    status_code_t retval;
++
++    if((retval = reclaim_sdcard_if_external()) != Status_OK)
++        return retval;
++#endif
+ 
+     vfs_getcwd(path, MAX_PATHLEN);
+ 
+@@ -561,6 +579,11 @@ FLASHMEM status_code_t stream_file (sys_state_t state, char *fname)
+     vfs_stat_t st;
+     status_code_t retval = Status_Unhandled;
+ 
++#if FS_ENABLE & FS_SDCARD
++    if((retval = reclaim_sdcard_if_external()) != Status_OK)
++        return retval;
++#endif
++
+     if(!fs.mounted)
+         retval = Status_SDNotMounted;
+     else if(!(state == STATE_IDLE || state == STATE_CHECK_MODE))
+@@ -662,6 +685,11 @@ FLASHMEM static status_code_t cmd_to_output (sys_state_t state, char *args)
+ {
+     status_code_t retval = Status_Unhandled;
+ 
++#if FS_ENABLE & FS_SDCARD
++    if((retval = reclaim_sdcard_if_external()) != Status_OK)
++        return retval;
++#endif
++
+     if(!fs.mounted)
+         retval = Status_SDNotMounted;
+     else if(!(state == STATE_IDLE || state == STATE_CHECK_MODE))
+@@ -698,6 +726,11 @@ FLASHMEM static status_code_t cmd_cwd (sys_state_t state, char *args)
+ {
+     status_code_t retval = Status_Unhandled;
+ 
++#if FS_ENABLE & FS_SDCARD
++    if((retval = reclaim_sdcard_if_external()) != Status_OK)
++        return retval;
++#endif
++
+     if(args) {
+ 
+         vfs_stat_t st;
+@@ -725,6 +758,12 @@ FLASHMEM static status_code_t cmd_cwd (sys_state_t state, char *args)
+ FLASHMEM static status_code_t cmd_format (sys_state_t state, char *args)
+ {
+     status_code_t status = Status_InvalidStatement;
++#if FS_ENABLE & FS_SDCARD
++    status_code_t retval;
++
++    if((retval = reclaim_sdcard_if_external()) != Status_OK)
++        return retval;
++#endif
+ 
+     vfs_drives_t *dh;
+ 
+@@ -754,6 +793,12 @@ FLASHMEM static status_code_t cmd_format (sys_state_t state, char *args)
+ FLASHMEM static status_code_t cmd_mount_info (sys_state_t state, char *args)
+ {
+     vfs_drives_t *dh;
++#if FS_ENABLE & FS_SDCARD
++    status_code_t retval;
++
++    if((retval = reclaim_sdcard_if_external()) != Status_OK)
++        return retval;
++#endif
+ 
+     if((dh = vfs_drives_open())) {
+         vfs_drive_t *drive;
+@@ -781,6 +826,11 @@ FLASHMEM static status_code_t cmd_unlink (sys_state_t state, char *args)
+ {
+     status_code_t retval = Status_Unhandled;
+ 
++#if FS_ENABLE & FS_SDCARD
++    if((retval = reclaim_sdcard_if_external()) != Status_OK)
++        return retval;
++#endif
++
+     if(!fs.mounted)
+         retval = Status_SDNotMounted;
+     else if(fs.mode.read_only)
+diff --git a/sdcard.c b/sdcard.c
+index 260eb45..e256028 100644
+--- a/sdcard.c
++++ b/sdcard.c
+@@ -51,7 +51,7 @@ static char dev[10] = "";
+ /* uses fatfs - http://www.elm-chan.org/fsw/ff/00index_e.html */
+ 
+ static FATFS *fatfs = NULL;
+-static bool mount_changed = false, realtime_report_subscribed = false, sd_detectable = false;
++static bool mount_changed = false, realtime_report_subscribed = false, sd_detectable = false, released_to_external = false;
+ static xbar_t *detect_pin = NULL;
+ static sdcard_events_t sdcard;
+ static on_realtime_report_ptr on_realtime_report;
+@@ -86,6 +86,9 @@ FLASHMEM static bool sdcard_mount (void)
+ {
+     static FATFS *fs = NULL;
+ 
++    if(released_to_external)
++        return false;
++
+     bool is_mounted = !!fatfs;
+ 
+     if(sdcard.on_mount) {
+@@ -127,7 +130,7 @@ FLASHMEM static bool sdcard_mount (void)
+ 
+ FLASHMEM static void sdcard_auto_mount (void *data)
+ {
+-    if(fatfs == NULL && !sdcard_mount())
++    if(!released_to_external && fatfs == NULL && !sdcard_mount())
+         report_message("SD card automount failed", Message_Info);
+ }
+ 
+@@ -152,9 +155,41 @@ static bool sdcard_unmount (void)
+     return fatfs == NULL;
+ }
+ 
++FLASHMEM bool sdcard_release_to_external (void)
++{
++    released_to_external = false;
++
++    if(sdcard_unmount())
++        released_to_external = true;
++
++    return released_to_external;
++}
++
++FLASHMEM bool sdcard_reclaim_from_external (void)
++{
++    if(released_to_external) {
++        if(sdcard.on_reclaim && !sdcard.on_reclaim())
++            return false;
++
++        released_to_external = false;
++    }
++
++    return sdcard_mount();
++}
++
++FLASHMEM bool sdcard_is_released_to_external (void)
++{
++    return released_to_external;
++}
++
++FLASHMEM void sdcard_set_reclaim_callback (on_reclaim_ptr on_reclaim)
++{
++    sdcard.on_reclaim = on_reclaim;
++}
++
+ FLASHMEM static status_code_t sd_cmd_mount (sys_state_t state, char *args)
+ {
+-    return sdcard_mount() ? Status_OK : Status_SDMountError;
++    return sdcard_reclaim_from_external() ? Status_OK : Status_SDMountError;
+ }
+ 
+ FLASHMEM static status_code_t sd_cmd_unmount (sys_state_t state, char *args)
+@@ -166,7 +201,7 @@ FLASHMEM static void sd_detect (void *mount)
+ {
+     if((uint32_t)mount == 0)
+         sdcard_unmount();
+-    else if(fatfs == NULL)
++    else if(!released_to_external && fatfs == NULL)
+         sdcard_mount();
+ }
+ 
+@@ -284,7 +319,7 @@ FLASHMEM sdcard_events_t *sdcard_init (void)
+ 
+ FLASHMEM FATFS *sdcard_getfs (void)
+ {
+-    if(fatfs == NULL)
++    if(!released_to_external && fatfs == NULL)
+         sdcard_mount();
+ 
+     return fatfs;
+diff --git a/sdcard.h b/sdcard.h
+index 73c84d7..2083e34 100644
+--- a/sdcard.h
++++ b/sdcard.h
+@@ -47,10 +47,12 @@
+ 
+ typedef char *(*on_mount_ptr)(FATFS **fs);
+ typedef bool (*on_unmount_ptr)(FATFS **fs);
++typedef bool (*on_reclaim_ptr)(void);
+ 
+ typedef struct {
+     on_mount_ptr on_mount;
+     on_unmount_ptr on_unmount;
++    on_reclaim_ptr on_reclaim;
+ } sdcard_events_t;
+ 
+ typedef stream_job_t sdcard_job_t;
+@@ -62,5 +64,9 @@ sdcard_events_t *sdcard_init (void);
+ FATFS *sdcard_getfs (void);
+ void sdcard_detect (bool mount);
+ void sdcard_early_mount (void);
++void sdcard_set_reclaim_callback (on_reclaim_ptr on_reclaim);
++bool sdcard_release_to_external (void);
++bool sdcard_reclaim_from_external (void);
++bool sdcard_is_released_to_external (void);
+ 
+ #endif // FS_ENABLE & FS_SDCARD
+-- 
+2.54.0
+
