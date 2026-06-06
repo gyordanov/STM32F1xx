@@ -767,7 +767,7 @@ index ad00169..3e1f53f 100644
              line[char_counter] = '\0';
              gc_state.last_error = *line == '\0' ? Status_OK : (*line == '$' ? system_execute_line(line) : Status_SystemGClock);
 diff --git i/report.c w/report.c
-index 6a9cbb4..a9095ad 100644
+index 6a9cbb4..5ba5b4b 100644
 --- i/report.c
 +++ w/report.c
 @@ -309,7 +309,11 @@ FLASHMEM static void report_init_message (stream_write_ptr write)
@@ -782,6 +782,15 @@ index 6a9cbb4..a9095ad 100644
  #else
      write(ASCII_EOL "Grbl " GRBL_VERSION " ['$' for help]" ASCII_EOL);
  #endif
+@@ -1085,7 +1089,7 @@ FLASHMEM void report_build_info (char *line, bool extended)
+         }
+ 
+         if(hal.get_free_mem) {
+-            hal.stream.write("[FREE MEMORY:");
++            hal.stream.write("[FM:");
+             hal.stream.write(uitoa(hal.get_free_mem() / 1024));
+             hal.stream.write("K]" ASCII_EOL);
+         }
 @@ -1277,8 +1281,8 @@ void report_realtime_status (stream_write_ptr stream_write, status_report_tracki
          // Apply work coordinate offsets and tool length offset to current position.
          for(idx = 0; idx < N_AXIS; idx++) {

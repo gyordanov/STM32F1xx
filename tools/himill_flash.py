@@ -42,7 +42,8 @@ Protocol summary (values in hex, little-endian where multi-byte):
 
     Data transfer (repeat per chunk):
         host -> dev  52 seq[2] 00 04 <1024 firmware bytes>    — full chunk
-                     53 seq[2] len[2] 00 <len firmware bytes> — partial (final)
+                     53 seq[2] len[2] <len firmware bytes>    — final marker
+                                                                  (len may be 0)
         dev  -> host a2 seq[2] 01          — chunk ack
 
     Finalize / jump to app:
@@ -374,10 +375,11 @@ def flash(port, firmware_path):
     total = len(data)
     full_chunks = total // CHUNK_SIZE
     remainder = total - full_chunks * CHUNK_SIZE
+    transfer_chunks = full_chunks + 1
 
     print(f"→ Flashing {firmware_path} ({total} bytes, "
           f"{full_chunks} full + "
-          f"{1 if remainder else 0} partial chunks)")
+          f"{1 if remainder else 0} partial + final marker)")
 
     with serial.Serial(port, baudrate=115200, timeout=5) as ser:
         handshake(ser)
@@ -385,16 +387,20 @@ def flash(port, firmware_path):
         for i in range(full_chunks):
             chunk = data[i * CHUNK_SIZE : (i + 1) * CHUNK_SIZE]
             send_chunk(ser, i, chunk, final=False)
-            pct = (i + 1) * 100 // (full_chunks + (1 if remainder else 0))
-            print(f"  chunk {i+1}/{full_chunks + (1 if remainder else 0)} "
+            pct = (i + 1) * 100 // transfer_chunks
+            print(f"  chunk {i+1}/{transfer_chunks} "
                   f"({pct}%)   ", end="\r", flush=True)
 
-        if remainder:
-            tail = data[full_chunks * CHUNK_SIZE:]
-            send_chunk(ser, full_chunks, tail, final=True)
-            print(f"  chunk {full_chunks+1}/{full_chunks+1} (100%)   ")
+        # The HiMill bootloader expects a CMD_FINAL record to commit the image.
+        # If the firmware length is an exact multiple of 1024 bytes this is a
+        # zero-length final marker; without it the board can remain in Boot mode
+        # after a seemingly successful flash.
+        tail = data[full_chunks * CHUNK_SIZE:]
+        send_chunk(ser, full_chunks, tail, final=True)
+        if tail:
+            print(f"  chunk {full_chunks+1}/{transfer_chunks} (100%)   ")
         else:
-            print()
+            print(f"  final marker {full_chunks+1}/{transfer_chunks} (100%)   ")
 
         # Keep serial port open — we need the USB device alive while we
         # send the final CDC SET_CONTROL_LINE_STATE. pyserial's dtr/rts

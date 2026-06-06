@@ -54,7 +54,7 @@ extern uint32_t diskio_d1s_diagnostics (void);
 #define HIMILL_BOOTFLAG_ADDR   ((volatile uint32_t *)0x2000BFF0UL)
 #define HIMILL_BOOTFLAG_MAGIC  0xFA0505F5UL
 #define HIMILL_D1S_PLUGIN_NAME    "HIMILL_D1S"
-#define HIMILL_D1S_PLUGIN_VERSION "0.7"
+#define HIMILL_D1S_PLUGIN_VERSION "0.8"
 
 // STM32F103's factory-burned ROM bootloader (System Memory region).
 // Speaks standard USB DFU → dfu-util works out of the box on any OS.
@@ -74,6 +74,16 @@ static on_stream_changed_ptr   on_stream_changed;
 static on_report_handlers_init_ptr on_report_handlers_init;
 static on_realtime_report_ptr  on_realtime_report;
 static status_message_ptr      on_status_message;
+
+extern void *_sbrk (int incr);
+
+static uint32_t himill_get_free_mem (void)
+{
+    register char *stack_ptr asm("sp");
+    char *heap_end = (char *)_sbrk(0);
+
+    return heap_end < stack_ptr ? (uint32_t)(stack_ptr - heap_end) : 0;
+}
 
 #if RGB_LED_ENABLE == 2
 
@@ -1030,6 +1040,46 @@ static inline void laser_pwm_mirror (void)
 // (esp_tunnel_until_ms is declared up at file scope so mux_read can see it.)
 #define ESP_TUNNEL_WINDOW_MS 20000
 
+#if FS_ENABLE & FS_SDCARD
+#define D1S_SD_LOCK_HEARTBEAT_MS 1000
+
+static bool d1s_sd_lock_reported = false;
+static uint32_t d1s_sd_lock_last_ms = 0;
+
+static bool himill_sd_job_active (void);
+
+static bool himill_sd_lock_write (const char *line)
+{
+    if(!(mux_uart && mux_uart->write))
+        return false;
+
+    mux_uart_write_direct(line);
+    mux_uart_write_direct(ASCII_EOL);
+
+    return true;
+}
+
+static void himill_sd_lock_poll (void)
+{
+    if(!hal.get_elapsed_ticks)
+        return;
+
+    uint32_t now = hal.get_elapsed_ticks();
+    bool active = himill_sd_job_active();
+
+    if(active) {
+        if((!d1s_sd_lock_reported ||
+             (now - d1s_sd_lock_last_ms) >= D1S_SD_LOCK_HEARTBEAT_MS) &&
+            himill_sd_lock_write("[D1S_SD_LOCK:file]")) {
+            d1s_sd_lock_reported = true;
+            d1s_sd_lock_last_ms = now;
+        }
+    } else if(d1s_sd_lock_reported && himill_sd_lock_write("[D1S_SD_UNLOCK]")) {
+        d1s_sd_lock_reported = false;
+    }
+}
+#endif
+
 static void esp_tunnel_reset_response_state (void)
 {
     esp_tunnel_json_seen = false;
@@ -1158,6 +1208,10 @@ static void himill_poll_buttons (sys_state_t state)
             }
         }
     }
+
+#if FS_ENABLE & FS_SDCARD
+    himill_sd_lock_poll();
+#endif
 
     if (on_execute_realtime)
         on_execute_realtime(state);
@@ -2457,6 +2511,8 @@ static void on_report_options_himill (bool newopt)
 
 void board_init (void)
 {
+    hal.get_free_mem = himill_get_free_mem;
+
     // PD2 = TMC STEPPER_MODE pin. Initial level is driven HIGH (SpreadCycle)
     // here; himill_settings_load will reapply the user-selected mode once
     // NVS is up. Worst case if NVS read fails we stay on SpreadCycle, which

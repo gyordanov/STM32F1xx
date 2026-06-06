@@ -44,13 +44,13 @@ static const io_stream_t *serialInit (uint32_t baud_rate);
 #error "Add SERIAL_PORT before adding SERIAL1_PORT!"
 #endif
 // Custom TX buffer size for SERIAL1_PORT, separate from TX_BUFFER_SIZE.
-// Reason: a board may need a large primary TX buffer (e.g. HiMill D1S sets
-// TX_BUFFER_SIZE=8192 on USART2 to absorb full $esh dumps) while the
+// Reason: a board may need a large primary TX buffer (e.g. HiMill D1S sets a
+// larger TX_BUFFER_SIZE on USART2 to absorb full $esh dumps) while the
 // secondary UART carries small MPG/jog packets that don't justify another
-// 8 KB allocation. With STM32F103RC's 48 KB RAM, two 8 KB TX buffers push
+// matching allocation. With STM32F103RC's 48 KB RAM, two large TX buffers push
 // the build over the edge — settings dumps over telnet started locking up
-// at $5=7 deterministically. 1 KB is plenty for MPG protocol traffic and
-// can be overridden via build flag for boards that need more.
+// at $5=7 deterministically. The default is 1 KB, and boards can override it
+// via build flag when they need less or more.
 #ifndef TX_BUFFER1_SIZE
 #define TX_BUFFER1_SIZE 1024
 #endif
