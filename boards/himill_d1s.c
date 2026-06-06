@@ -54,7 +54,7 @@ extern uint32_t diskio_d1s_diagnostics (void);
 #define HIMILL_BOOTFLAG_ADDR   ((volatile uint32_t *)0x2000BFF0UL)
 #define HIMILL_BOOTFLAG_MAGIC  0xFA0505F5UL
 #define HIMILL_D1S_PLUGIN_NAME    "HIMILL_D1S"
-#define HIMILL_D1S_PLUGIN_VERSION "0.6"
+#define HIMILL_D1S_PLUGIN_VERSION "0.7"
 
 // STM32F103's factory-burned ROM bootloader (System Memory region).
 // Speaks standard USB DFU → dfu-util works out of the box on any OS.
@@ -849,7 +849,7 @@ static bool mux_find_uart (io_stream_properties_t const *props, void *data)
 {
     if (props->type == StreamType_Serial && props->instance == 0
             && props->flags.claimable && !props->flags.claimed) {
-        mux_uart = props->claim(250000);  // matches ESP3D side
+        mux_uart = props->claim(115200);  // matches stock ESP3D side
         return true;
     }
     return false;
