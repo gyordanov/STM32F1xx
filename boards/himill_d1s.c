@@ -34,7 +34,13 @@
 #include "grbl/vfs.h"
 #include "sdcard/sdcard.h"
 
+#ifndef D1S_DISKIO_DIAG_ENABLE
+#define D1S_DISKIO_DIAG_ENABLE 0
+#endif
+
+#if D1S_DISKIO_DIAG_ENABLE
 extern uint32_t diskio_d1s_diagnostics (void);
+#endif
 #endif
 
 // HiMill stock bootloader lives at 0x08000000. It waits for a USB-CDC
@@ -54,7 +60,7 @@ extern uint32_t diskio_d1s_diagnostics (void);
 #define HIMILL_BOOTFLAG_ADDR   ((volatile uint32_t *)0x2000BFF0UL)
 #define HIMILL_BOOTFLAG_MAGIC  0xFA0505F5UL
 #define HIMILL_D1S_PLUGIN_NAME    "HIMILL_D1S"
-#define HIMILL_D1S_PLUGIN_VERSION "0.8"
+#define HIMILL_D1S_PLUGIN_VERSION "0.9"
 
 // STM32F103's factory-burned ROM bootloader (System Memory region).
 // Speaks standard USB DFU → dfu-util works out of the box on any OS.
@@ -1361,6 +1367,7 @@ static void d1s_upload_send_error_code (const char *reason, int code)
         code = -code;
     }
     mux_uart_write_direct(uitoa((uint32_t)code));
+#if D1S_DISKIO_DIAG_ENABLE
     uint32_t diag = diskio_d1s_diagnostics();
     if(diag) {
         char hex[9];
@@ -1372,6 +1379,7 @@ static void d1s_upload_send_error_code (const char *reason, int code)
         mux_uart_write_direct(":");
         mux_uart_write_direct(hex);
     }
+#endif
     d1s_upload_send_line("]");
 }
 
@@ -2038,9 +2046,6 @@ static status_code_t himill_user_command (char *line)
     if (strcmp(line, "[D1S_SD_DONE]") == 0) {
         if (mux_last_rx_owner != mux_uart)
             return on_user_command ? on_user_command(line) : Status_Unhandled;
-
-        BYTE power = 0;
-        disk_ioctl(0, CTRL_POWER, &power);
 
         if(sdcard_reclaim_from_external_done())
             mux_uart_write_direct("[D1S_SD_ACK]" ASCII_EOL);

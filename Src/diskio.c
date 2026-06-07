@@ -18,10 +18,23 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "main.h"
 #include "ff.h"
 #include "diskio.h"
+
+#ifndef D1S_SD_READ_VERIFY
+#define D1S_SD_READ_VERIFY 0
+#endif
+
+#ifndef D1S_DISKIO_DIAG_ENABLE
+#define D1S_DISKIO_DIAG_ENABLE 0
+#endif
+
+#ifndef D1S_SD_READ_VERIFY_DETAIL
+#define D1S_SD_READ_VERIFY_DETAIL 0
+#endif
 
 /* Definitions for MMC/SDC command */
 #define CMD0    (0x40+0)    /* GO_IDLE_STATE */
@@ -91,7 +104,19 @@ BYTE CardType;            /* b0:MMC, b1:SDC, b2:Block addressing */
 static
 BYTE PowerFlag = 0;     /* indicates if "power" is on */
 
+#if defined(BOARD_HIMILL_D1S)
+#define D1S_GPIO_PIN(pin) ((uint16_t)(1U << (pin)))
+static bool d1s_spi_released = false;
+static void d1s_sd_restore_spi_pins (void);
+#endif
+
+#if defined(BOARD_HIMILL_D1S) && D1S_DISKIO_DIAG_ENABLE
 static volatile uint32_t diskio_diag = 0;
+
+static inline void diskio_clear_diag (void)
+{
+    diskio_diag = 0;
+}
 
 static inline void diskio_set_diag (BYTE op, BYTE detail)
 {
@@ -102,6 +127,135 @@ uint32_t diskio_d1s_diagnostics (void)
 {
     return diskio_diag;
 }
+#else
+#define diskio_clear_diag() do { } while(0)
+#define diskio_set_diag(op, detail) do { } while(0)
+#endif
+
+#if defined(BOARD_HIMILL_D1S) && D1S_SD_READ_VERIFY
+static BYTE d1s_verify_buf[512];
+static uint32_t d1s_verify_mismatches = 0;
+static uint32_t d1s_verify_recovered = 0;
+static uint32_t d1s_verify_failed = 0;
+static uint32_t d1s_verify_last_sector = 0;
+static uint16_t d1s_verify_last_offset = 0;
+static BYTE d1s_verify_last_first = 0;
+static BYTE d1s_verify_last_second = 0;
+static uint8_t d1s_verify_last_attempt = 0;
+#if D1S_SD_READ_VERIFY_DETAIL
+static BYTE d1s_verify_ctx_first[32];
+static BYTE d1s_verify_ctx_second[32];
+static uint16_t d1s_verify_ctx_offset = 0;
+static uint8_t d1s_verify_ctx_len = 0;
+#endif
+#endif
+
+#if defined(BOARD_HIMILL_D1S)
+static void d1s_sd_release_spi_pins (void)
+{
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+
+    GPIO_InitStruct.Pin = D1S_GPIO_PIN(SD_CS_PIN) | D1S_GPIO_PIN(SD_SCK_PIN) |
+                          D1S_GPIO_PIN(SD_MISO_PIN) | D1S_GPIO_PIN(SD_MOSI_PIN);
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+}
+
+static void d1s_sd_restore_spi_pins (void)
+{
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+
+    GPIO_InitStruct.Pin = D1S_GPIO_PIN(SD_CS_PIN);
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(SD_CS_PORT, &GPIO_InitStruct);
+    DESELECT();
+
+    GPIO_InitStruct.Pin = D1S_GPIO_PIN(SD_SCK_PIN) | D1S_GPIO_PIN(SD_MOSI_PIN);
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin = D1S_GPIO_PIN(SD_MISO_PIN);
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+}
+#endif
+
+#if defined(BOARD_HIMILL_D1S) && D1S_SD_READ_VERIFY
+void diskio_d1s_verify_reset (void)
+{
+    d1s_verify_mismatches = 0;
+    d1s_verify_recovered = 0;
+    d1s_verify_failed = 0;
+    d1s_verify_last_sector = 0;
+    d1s_verify_last_offset = 0;
+    d1s_verify_last_first = 0;
+    d1s_verify_last_second = 0;
+    d1s_verify_last_attempt = 0;
+#if D1S_SD_READ_VERIFY_DETAIL
+    d1s_verify_ctx_offset = 0;
+    d1s_verify_ctx_len = 0;
+    memset(d1s_verify_ctx_first, 0, sizeof(d1s_verify_ctx_first));
+    memset(d1s_verify_ctx_second, 0, sizeof(d1s_verify_ctx_second));
+#endif
+}
+
+void diskio_d1s_verify_stats (uint32_t *mismatches, uint32_t *recovered, uint32_t *failed, uint32_t *last_sector, uint8_t *last_attempt)
+{
+    if(mismatches)
+        *mismatches = d1s_verify_mismatches;
+    if(recovered)
+        *recovered = d1s_verify_recovered;
+    if(failed)
+        *failed = d1s_verify_failed;
+    if(last_sector)
+        *last_sector = d1s_verify_last_sector;
+    if(last_attempt)
+        *last_attempt = d1s_verify_last_attempt;
+}
+
+void diskio_d1s_verify_detail (uint16_t *last_offset, uint8_t *last_first, uint8_t *last_second)
+{
+    if(last_offset)
+        *last_offset = d1s_verify_last_offset;
+    if(last_first)
+        *last_first = d1s_verify_last_first;
+    if(last_second)
+        *last_second = d1s_verify_last_second;
+}
+
+uint8_t diskio_d1s_verify_context (uint16_t *start_offset, uint8_t *first, uint8_t *second, uint8_t max_len)
+{
+#if D1S_SD_READ_VERIFY_DETAIL
+    uint8_t len = d1s_verify_ctx_len;
+
+    if(start_offset)
+        *start_offset = d1s_verify_ctx_offset;
+
+    if(len > max_len)
+        len = max_len;
+
+    if(first && len)
+        memcpy(first, d1s_verify_ctx_first, len);
+    if(second && len)
+        memcpy(second, d1s_verify_ctx_second, len);
+
+    return len;
+#else
+    if(start_offset)
+        *start_offset = 0;
+
+    return 0;
+#endif
+}
+#endif
 
 /*-----------------------------------------------------------------------*/
 /* Transmit a byte to MMC via SPI  (Platform dependent)                  */
@@ -110,13 +264,11 @@ uint32_t diskio_d1s_diagnostics (void)
 static
 void xmit_spi(BYTE dat)
 {
-    while(!__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_TXE));
-
     hspi1.Instance->DR = dat;
 
-    while(!__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_RXNE));
+    while(!__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_TXE));
 
-    (void)hspi1.Instance->DR;
+    __HAL_SPI_CLEAR_OVRFLAG(&hspi1);
 }
 
 
@@ -127,8 +279,6 @@ void xmit_spi(BYTE dat)
 static
 BYTE rcvr_spi (void)
 {
-    while(!__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_TXE));
-
     hspi1.Instance->DR = 0xFF; // Writing dummy data into Data register
 
     while(!__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_RXNE));
@@ -191,6 +341,13 @@ void power_on (void)
 {
     static bool init = false;
 
+#if defined(BOARD_HIMILL_D1S)
+    if(d1s_spi_released) {
+        d1s_sd_restore_spi_pins();
+        d1s_spi_released = false;
+    }
+#endif
+
     /*
      * This doesn't really turn the power on, but initializes the
      * SSI port and pins needed to talk to the card.
@@ -230,6 +387,26 @@ void power_off (void)
     Stat |= STA_NOINIT;
     __HAL_SPI_DISABLE(&hspi1);
 }
+
+#if defined(BOARD_HIMILL_D1S)
+void diskio_d1s_release_to_external (void)
+{
+    if(!d1s_spi_released) {
+        DESELECT();
+        power_off();
+        d1s_sd_release_spi_pins();
+        d1s_spi_released = true;
+    }
+}
+
+void diskio_d1s_prepare_reclaim (void)
+{
+    if(d1s_spi_released) {
+        d1s_sd_restore_spi_pins();
+        d1s_spi_released = false;
+    }
+}
+#endif
 
 static
 int chk_power(void)        /* Socket power state: 0=off, 1=on */
@@ -484,6 +661,83 @@ DSTATUS disk_status (
 /* Read Sector(s)                                                        */
 /*-----------------------------------------------------------------------*/
 
+#if defined(BOARD_HIMILL_D1S) && D1S_SD_READ_VERIFY
+static BOOL read_single_block (DWORD sector, BYTE *buff)
+{
+    BYTE cmdres = send_cmd(CMD17, sector);
+
+    if(cmdres != 0) {
+        diskio_set_diag(CMD17, cmdres);
+        return FALSE;
+    }
+
+    if(!rcvr_datablock(buff, 512)) {
+        diskio_set_diag(CMD17, 0xFE);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static void d1s_verify_next_transaction (void)
+{
+    DESELECT();
+    rcvr_spi();            /* Idle (Release DO), matching normal disk_read end. */
+    SELECT();
+}
+
+static BOOL read_single_block_verified (DWORD sector, BYTE *buff)
+{
+    for(uint_fast8_t attempt = 0; attempt < 3; attempt++) {
+
+        if(!read_single_block(sector, buff))
+            return FALSE;
+
+        d1s_verify_next_transaction();
+
+        if(!read_single_block(sector, d1s_verify_buf))
+            return FALSE;
+
+        if(!memcmp(buff, d1s_verify_buf, sizeof(d1s_verify_buf))) {
+            if(attempt) {
+                d1s_verify_recovered++;
+                d1s_verify_last_sector = sector;
+                d1s_verify_last_attempt = attempt;
+                diskio_set_diag(0xD1, attempt);
+            }
+            return TRUE;
+        }
+
+        for(uint16_t i = 0; i < sizeof(d1s_verify_buf); i++) {
+            if(buff[i] != d1s_verify_buf[i]) {
+                d1s_verify_last_offset = i;
+                d1s_verify_last_first = buff[i];
+                d1s_verify_last_second = d1s_verify_buf[i];
+#if D1S_SD_READ_VERIFY_DETAIL
+                d1s_verify_ctx_offset = i > 16U ? i - 16U : 0;
+                d1s_verify_ctx_len = sizeof(d1s_verify_ctx_first);
+                if(d1s_verify_ctx_offset + d1s_verify_ctx_len > sizeof(d1s_verify_buf))
+                    d1s_verify_ctx_len = sizeof(d1s_verify_buf) - d1s_verify_ctx_offset;
+                memcpy(d1s_verify_ctx_first, buff + d1s_verify_ctx_offset, d1s_verify_ctx_len);
+                memcpy(d1s_verify_ctx_second, d1s_verify_buf + d1s_verify_ctx_offset, d1s_verify_ctx_len);
+#endif
+                break;
+            }
+        }
+
+        d1s_verify_mismatches++;
+        d1s_verify_last_sector = sector;
+        d1s_verify_last_attempt = attempt;
+        diskio_set_diag(0xD0, attempt);
+
+        d1s_verify_next_transaction();
+    }
+
+    d1s_verify_failed++;
+    return FALSE;
+}
+#endif
+
 DRESULT disk_read (
     BYTE drv,            /* Physical drive nmuber (0) */
     BYTE *buff,            /* Pointer to the data buffer to store read data */
@@ -500,8 +754,12 @@ DRESULT disk_read (
 //  __HAL_SPI_ENABLE(&hspi1);
 
     if (count == 1) {    /* Single block read */
+#if defined(BOARD_HIMILL_D1S) && D1S_SD_READ_VERIFY
+        if (read_single_block_verified(sector, buff))
+#else
         if ((send_cmd(CMD17, sector) == 0)    /* READ_SINGLE_BLOCK */
             && rcvr_datablock(buff, 512))
+#endif
             count = 0;
     }
     else {                /* Multiple block read */
@@ -539,7 +797,7 @@ DRESULT disk_write (
     if (Stat & STA_NOINIT) return RES_NOTRDY;
     if (Stat & STA_PROTECT) return RES_WRPRT;
 
-    diskio_diag = 0;
+    diskio_clear_diag();
 
     if (!(CardType & 4)) sector *= 512;    /* Convert to byte address if needed */
 

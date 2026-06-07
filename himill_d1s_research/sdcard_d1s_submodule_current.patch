@@ -35,15 +35,48 @@ index 851b283..e821f12 100644
      }
  
 diff --git i/fs_stream.c w/fs_stream.c
-index 6f4cc74..9927ce7 100644
+index 6f4cc74..f6ce93c 100644
 --- i/fs_stream.c
 +++ w/fs_stream.c
-@@ -88,12 +88,71 @@ static file_t file = {
+@@ -21,6 +21,12 @@
+ 
+ #include "sdcard.h"
+ 
++#ifdef NO_ALARM_ERROR_DESCRIPTIONS
++  #define SDCARD_STATUS_DESCRIPTION(text) NULL
++#else
++  #define SDCARD_STATUS_DESCRIPTION(text) text
++#endif
++
+ #if FS_ENABLE
+ 
+ #include <stdio.h>
+@@ -31,6 +37,7 @@
+ 
+ #include "grbl/report.h"
+ #include "grbl/protocol.h"
++#include "grbl/gcode.h"
+ #include "grbl/state_machine.h"
+ #include "grbl/stream_file.h"
+ #include "grbl/strutils.h"
+@@ -80,6 +87,7 @@ typedef struct
+     line_number_t line_number;
+     uint8_t eol;
+     bool scan_subs;
++    bool read_error;
+ } file_t;
+ 
+ static file_t file = {
+@@ -88,12 +96,160 @@ static file_t file = {
      .pos = 0
  };
  
 +#ifndef D1S_SDDBG_ENABLE
 +#define D1S_SDDBG_ENABLE 0
++#endif
++
++#ifndef D1S_SD_READ_VERIFY
++#define D1S_SD_READ_VERIFY 0
 +#endif
 +
 +#if defined(BOARD_HIMILL_D1S) && D1S_SDDBG_ENABLE
@@ -52,6 +85,15 @@ index 6f4cc74..9927ce7 100644
 +static uint_fast8_t d1s_sddbg_line_len = 0;
 +static line_number_t d1s_sddbg_line_number = 1;
 +static bool d1s_sddbg_line_overflow = false;
++
++#if D1S_SD_READ_VERIFY
++extern void diskio_d1s_verify_reset (void);
++extern void diskio_d1s_verify_stats (uint32_t *mismatches, uint32_t *recovered, uint32_t *failed, uint32_t *last_sector, uint8_t *last_attempt);
++extern void diskio_d1s_verify_detail (uint16_t *last_offset, uint8_t *last_first, uint8_t *last_second);
++extern uint8_t diskio_d1s_verify_context (uint16_t *start_offset, uint8_t *first, uint8_t *second, uint8_t max_len);
++
++static bool d1s_sddbg_verify_active = false;
++#endif
 +
 +static void d1s_sddbg_reset (line_number_t line_number)
 +{
@@ -93,11 +135,87 @@ index 6f4cc74..9927ce7 100644
 +    hal.stream.write(tag);
 +    hal.stream.write("]" ASCII_EOL);
 +}
++
++#if D1S_SD_READ_VERIFY
++static char d1s_hex_digit (uint8_t value)
++{
++    value &= 0x0F;
++    return value < 10 ? '0' + value : 'A' + value - 10;
++}
++
++static char d1s_printable (uint8_t value)
++{
++    return value >= ' ' && value <= '~' ? (char)value : '.';
++}
++
++static void d1s_sddbg_verify_dump (const char *tag, const uint8_t *data, uint8_t len)
++{
++    char buf[112];
++    char *out = buf;
++
++    out += snprintf(out, sizeof(buf), "[MSG:SDDBG %s hex=", tag);
++    for(uint8_t i = 0; i < len && (out - buf) < (int)(sizeof(buf) - 4); i++) {
++        *out++ = d1s_hex_digit(data[i] >> 4);
++        *out++ = d1s_hex_digit(data[i]);
++    }
++
++    out += snprintf(out, sizeof(buf) - (out - buf), " asc=");
++    for(uint8_t i = 0; i < len && (out - buf) < (int)(sizeof(buf) - 2); i++)
++        *out++ = d1s_printable(data[i]);
++
++    *out++ = ']';
++    *out++ = ASCII_LF;
++    *out = '\0';
++    hal.stream.write(buf);
++}
++
++static void d1s_sddbg_verify_reset (void)
++{
++    diskio_d1s_verify_reset();
++    d1s_sddbg_verify_active = true;
++}
++
++static void d1s_sddbg_verify_report (const char *reason)
++{
++    if(!d1s_sddbg_verify_active)
++        return;
++
++    uint32_t mismatches, recovered, failed, last_sector;
++    uint16_t last_offset;
++    uint8_t last_attempt, last_first, last_second;
++    uint8_t first[32], second[32], ctx_len;
++    uint16_t ctx_offset;
++    char buf[160];
++
++    diskio_d1s_verify_stats(&mismatches, &recovered, &failed, &last_sector, &last_attempt);
++    diskio_d1s_verify_detail(&last_offset, &last_first, &last_second);
++    snprintf(buf, sizeof(buf), "[MSG:SDDBG VERIFY %s mismatch=" UINT32FMT " recovered=" UINT32FMT " failed=" UINT32FMT " last=" UINT32FMT " attempt=%u off=%u a=%02X b=%02X]" ASCII_EOL,
++             reason, mismatches, recovered, failed, last_sector, (unsigned int)last_attempt,
++             (unsigned int)last_offset, (unsigned int)last_first, (unsigned int)last_second);
++    hal.stream.write(buf);
++
++    ctx_len = diskio_d1s_verify_context(&ctx_offset, first, second, sizeof(first));
++    if(ctx_len) {
++        snprintf(buf, sizeof(buf), "[MSG:SDDBG DIFF sector=" UINT32FMT " ctx_off=%u len=%u]" ASCII_EOL,
++                 last_sector, (unsigned int)ctx_offset, (unsigned int)ctx_len);
++        hal.stream.write(buf);
++        d1s_sddbg_verify_dump("READ1", first, ctx_len);
++        d1s_sddbg_verify_dump("READ2", second, ctx_len);
++    }
++
++    d1s_sddbg_verify_active = false;
++}
++#else
++#define d1s_sddbg_verify_reset()
++#define d1s_sddbg_verify_report(reason)
++#endif
 +#else
 +#define d1s_sddbg_reset(line_number)
 +#define d1s_sddbg_capture(c)
 +#define d1s_sddbg_report()
 +#define d1s_sddbg_msg(tag)
++#define d1s_sddbg_verify_reset()
++#define d1s_sddbg_verify_report(reason)
 +#endif
 +
  static struct {
@@ -111,7 +229,19 @@ index 6f4cc74..9927ce7 100644
  static io_stream_t active_stream;
  static driver_reset_ptr driver_reset = NULL;
  static on_realtime_report_ptr on_realtime_report;
-@@ -119,7 +178,7 @@ static void onProgramCompleted (program_flow_t program_flow, bool check_mode);
+@@ -110,16 +266,19 @@ static on_vfs_unmount_ptr on_vfs_unmount;
+ 
+ static void onCycleStart (void);
+ static void stream_end_job (bool flush);
++static void stream_abort_on_error (void);
+ static void onRealtimeReport (stream_write_ptr stream_write, report_tracking_flags_t report);
+ static status_code_t trap_status_messages (status_code_t status_code);
+ static line_number_t onLineNumberAssigned (line_number_t line_number);
+ static void onProgramCompleted (program_flow_t program_flow, bool check_mode);
+ //static report_t active_reports;
+ 
++#define file_readbuf_reset()
++
  #if FS_ENABLE & FS_SDCARD
  FLASHMEM static status_code_t reclaim_sdcard_if_external (void)
  {
@@ -120,23 +250,60 @@ index 6f4cc74..9927ce7 100644
          report_message("SD card owned externally", Message_Warning);
          return Status_SDNotMounted;
      }
-@@ -267,6 +326,7 @@ FLASHMEM static bool file_open (char *filename)
+@@ -267,7 +426,11 @@ FLASHMEM static bool file_open (char *filename)
          file.size = st.st_size;
          file.pos = file.eol = 0;
          file.line_number = 1;
++        file_readbuf_reset();
 +        d1s_sddbg_reset(file.line_number);
++        d1s_sddbg_verify_reset();
          file.scan_subs = false;
++        file.read_error = false;
          char *leafname = strrchr(filename, '/');
          strncpy(file.name, leafname ? leafname + 1 : filename, sizeof(file.name));
-@@ -281,6 +341,7 @@ FLASHMEM static void file_rewind (void)
+         file.name[sizeof(file.name) - 1] = '\0';
+@@ -281,6 +444,10 @@ FLASHMEM static void file_rewind (void)
      vfs_seek(file.handle, 0);
      file.pos = file.eol = 0;
      file.line_number = 1;
++    file.read_error = false;
++    file_readbuf_reset();
 +    d1s_sddbg_reset(file.line_number);
++    d1s_sddbg_verify_reset();
  }
  
  static int16_t file_read (void)
-@@ -351,7 +412,7 @@ FLASHMEM static void stream_end_job (bool flush)
+@@ -303,6 +470,20 @@ static int16_t file_read (void)
+     return (int16_t)c;
+ }
+ 
++static void stream_abort_on_read_error (void)
++{
++    char buf[50];
++
++    sprintf(buf, "error:%d in SD file at line " UINT32FMT ASCII_EOL, (uint8_t)Status_FileReadError, file.line_number);
++    d1s_sddbg_msg("READERR");
++    d1s_sddbg_report();
++    hal.stream.write(buf);
++
++    stream_abort_on_error();
++    stream_end_job(true);
++    grbl.report.status_message(Status_FileReadError);
++}
++
+ FLASHMEM static status_code_t list_files (bool filtered)
+ {
+     char path[MAX_PATHLEN] = "", name[BUFLEN]; // NB! also used as work area when recursing directories
+@@ -320,6 +501,8 @@ FLASHMEM static status_code_t list_files (bool filtered)
+ 
+ FLASHMEM static void stream_end_job (bool flush)
+ {
++    d1s_sddbg_verify_report("end");
++
+     file_close();
+ 
+     if(grbl.on_program_completed == onProgramCompleted)
+@@ -351,19 +534,32 @@ FLASHMEM static void stream_end_job (bool flush)
      if(flush)                                                           // Flush input buffer?
          hal.stream.reset_read_buffer();                                 // Yes, do it.
  
@@ -145,7 +312,21 @@ index 6f4cc74..9927ce7 100644
  
      if(grbl.on_stream_changed)
          grbl.on_stream_changed(hal.stream.type);
-@@ -362,8 +423,10 @@ static int32_t stream_read (void)
+ }
+ 
++static void stream_abort_on_error (void)
++{
++    if(state_get() == STATE_CYCLE)
++        system_set_exec_state_flag(EXEC_MOTION_CANCEL);
++
++    system_set_exec_state_flag(EXEC_STOP);
++
++    gc_spindle_off();
++    gc_coolant((coolant_state_t){0});
++}
++
+ static int32_t stream_read (void)
+ {
      int32_t c = SERIAL_NO_DATA;
      sys_state_t state = state_get();
  
@@ -157,7 +338,19 @@ index 6f4cc74..9927ce7 100644
  
      if(file.handle) {
  
-@@ -388,6 +451,9 @@ static int32_t stream_read (void)
+@@ -372,7 +568,10 @@ static int32_t stream_read (void)
+ 
+         if(c == SERIAL_NO_DATA) { // EOF, error reading or grblHAL problem
+ 
+-            if(file.scan_subs) {
++            if(file.read_error) {
++                file.read_error = false;
++                stream_abort_on_read_error();
++            } else if(file.scan_subs) {
+                 hal.stream.state.m98_macro_prescan = file.scan_subs = false;
+                 file_rewind();
+                 state_set(STATE_IDLE);
+@@ -388,6 +587,9 @@ static int32_t stream_read (void)
          grbl.report.feedback_message(Message_ProgramEnd);
      }
  
@@ -167,15 +360,18 @@ index 6f4cc74..9927ce7 100644
      return c;
  }
  
-@@ -428,6 +494,7 @@ static status_code_t trap_status_messages (status_code_t status_code)
+@@ -428,8 +630,10 @@ static status_code_t trap_status_messages (status_code_t status_code)
          // TODO: all errors should terminate job?
          char buf[50]; // TODO: check if extended error reports are permissible
          sprintf(buf, "error:%d in SD file at line " UINT32FMT ASCII_EOL, (uint8_t)status_code, file.line_number);
 +        d1s_sddbg_report();
          hal.stream.write(buf);
  
++        stream_abort_on_error();
          stream_end_job(true);
-@@ -550,24 +617,22 @@ FLASHMEM static void stream_changed (stream_type_t type)
+         grbl.report.status_message(status_code);
+     }
+@@ -550,24 +754,22 @@ FLASHMEM static void stream_changed (stream_type_t type)
  {
      if(type != StreamType_File && file.handle != NULL) {
  
@@ -216,7 +412,7 @@ index 6f4cc74..9927ce7 100644
      }
  
      if(on_stream_changed)
-@@ -579,25 +644,30 @@ FLASHMEM status_code_t stream_file (sys_state_t state, char *fname)
+@@ -579,25 +781,30 @@ FLASHMEM status_code_t stream_file (sys_state_t state, char *fname)
      vfs_stat_t st;
      status_code_t retval = Status_Unhandled;
  
@@ -252,7 +448,7 @@ index 6f4cc74..9927ce7 100644
              if(!(grbl.on_file_open && (retval = grbl.on_file_open(fname, file.handle, true)) == Status_OK)) {
  
                  memcpy(&active_stream, &hal.stream, sizeof(io_stream_t));   // Save current stream pointers
-@@ -635,11 +705,18 @@ FLASHMEM status_code_t stream_file (sys_state_t state, char *fname)
+@@ -635,11 +842,18 @@ FLASHMEM status_code_t stream_file (sys_state_t state, char *fname)
                  }
  
                  retval = Status_OK;
@@ -273,7 +469,7 @@ index 6f4cc74..9927ce7 100644
  
      return retval;
  }
-@@ -903,7 +980,13 @@ FLASHMEM static void onReportOptions (bool newopt)
+@@ -903,7 +1117,13 @@ FLASHMEM static void onReportOptions (bool newopt)
  
  FLASHMEM static void onFsUnmount (const char *path)
  {
@@ -288,7 +484,7 @@ index 6f4cc74..9927ce7 100644
  
      if(on_vfs_unmount)
          on_vfs_unmount(path);
-@@ -913,7 +996,13 @@ FLASHMEM static void onFsMount (const char *path, const vfs_t *vfs, vfs_st_mode_
+@@ -913,7 +1133,13 @@ FLASHMEM static void onFsMount (const char *path, const vfs_t *vfs, vfs_st_mode_
  {
      if(!mode.hidden) {
  
@@ -303,6 +499,27 @@ index 6f4cc74..9927ce7 100644
          fs.mode = mode;
  
          if(driver_reset == NULL) {
+@@ -955,13 +1181,13 @@ FLASHMEM void fs_stream_init (void)
+     };
+ 
+     PROGMEM static const status_detail_t status_detail[] = {
+-        { Status_FileReadError, "File delete failed." },
+-        { Status_FsFailedOpenDir, "Directory listing failed." },
+-        { Status_FSDirNotFound, "Directory not found." },
+-        { Status_SDNotMounted, "SD Card not mounted." },
+-        { Status_FsNotMounted, "File system not mounted." },
+-        { Status_FsReadOnly, "File system is read only." },
+-        { Status_FsFormatFailed, "File system format failed." }
++        { Status_FileReadError, SDCARD_STATUS_DESCRIPTION("File delete failed.") },
++        { Status_FsFailedOpenDir, SDCARD_STATUS_DESCRIPTION("Directory listing failed.") },
++        { Status_FSDirNotFound, SDCARD_STATUS_DESCRIPTION("Directory not found.") },
++        { Status_SDNotMounted, SDCARD_STATUS_DESCRIPTION("SD Card not mounted.") },
++        { Status_FsNotMounted, SDCARD_STATUS_DESCRIPTION("File system not mounted.") },
++        { Status_FsReadOnly, SDCARD_STATUS_DESCRIPTION("File system is read only.") },
++        { Status_FsFormatFailed, SDCARD_STATUS_DESCRIPTION("File system format failed.") }
+     };
+ 
+     static error_details_t error_details = {
 diff --git i/macros.c w/macros.c
 index b98bf09..c971cf1 100644
 --- i/macros.c
@@ -332,17 +549,70 @@ index b98bf09..c971cf1 100644
          .save = settings_write_global
      };
 diff --git i/sdcard.c w/sdcard.c
-index e256028..c18c9ec 100644
+index e256028..a108cae 100644
 --- i/sdcard.c
 +++ w/sdcard.c
-@@ -177,6 +177,14 @@ FLASHMEM bool sdcard_reclaim_from_external (void)
+@@ -21,6 +21,12 @@
+ 
+ #include "sdcard.h"
+ 
++#ifdef NO_ALARM_ERROR_DESCRIPTIONS
++  #define SDCARD_STATUS_DESCRIPTION(text) NULL
++#else
++  #define SDCARD_STATUS_DESCRIPTION(text) text
++#endif
++
+ #if FS_ENABLE & FS_SDCARD
+ 
+ #include <stdio.h>
+@@ -59,6 +65,11 @@ static on_report_options_ptr on_report_options;
+ static driver_setup_ptr driver_setup;
+ static settings_changed_ptr settings_changed;
+ 
++#if defined(BOARD_HIMILL_D1S)
++extern void diskio_d1s_release_to_external (void);
++extern void diskio_d1s_prepare_reclaim (void);
++#endif
++
+ static void onRealtimeReport (stream_write_ptr stream_write, report_tracking_flags_t report);
+ 
+ #ifdef __MSP432E401Y__
+@@ -159,8 +170,12 @@ FLASHMEM bool sdcard_release_to_external (void)
+ {
+     released_to_external = false;
+ 
+-    if(sdcard_unmount())
++    if(sdcard_unmount()) {
++#if defined(BOARD_HIMILL_D1S)
++        diskio_d1s_release_to_external();
++#endif
+         released_to_external = true;
++    }
+ 
+     return released_to_external;
+ }
+@@ -171,12 +186,28 @@ FLASHMEM bool sdcard_reclaim_from_external (void)
+         if(sdcard.on_reclaim && !sdcard.on_reclaim())
+             return false;
+ 
++#if defined(BOARD_HIMILL_D1S)
++        diskio_d1s_prepare_reclaim();
++#endif
+         released_to_external = false;
+     }
+ 
      return sdcard_mount();
  }
  
 +FLASHMEM bool sdcard_reclaim_from_external_done (void)
 +{
-+    if(released_to_external)
-+        released_to_external = false;
++    if(!released_to_external)
++        return false;
++
++#if defined(BOARD_HIMILL_D1S)
++    diskio_d1s_prepare_reclaim();
++#endif
++    released_to_external = false;
 +
 +    return sdcard_mount();
 +}
@@ -350,6 +620,17 @@ index e256028..c18c9ec 100644
  FLASHMEM bool sdcard_is_released_to_external (void)
  {
      return released_to_external;
+@@ -292,8 +323,8 @@ FLASHMEM sdcard_events_t *sdcard_init (void)
+     };
+ 
+     PROGMEM static const status_detail_t status_detail[] = {
+-        { Status_SDMountError, "SD Card mount failed." },
+-        { Status_SDNotMounted, "SD Card not mounted." }
++        { Status_SDMountError, SDCARD_STATUS_DESCRIPTION("SD Card mount failed.") },
++        { Status_SDNotMounted, SDCARD_STATUS_DESCRIPTION("SD Card not mounted.") }
+     };
+ 
+     static error_details_t error_details = {
 diff --git i/sdcard.h w/sdcard.h
 index 2083e34..b6a8420 100644
 --- i/sdcard.h
