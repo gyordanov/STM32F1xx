@@ -60,7 +60,7 @@ extern uint32_t diskio_d1s_diagnostics (void);
 #define HIMILL_BOOTFLAG_ADDR   ((volatile uint32_t *)0x2000BFF0UL)
 #define HIMILL_BOOTFLAG_MAGIC  0xFA0505F5UL
 #define HIMILL_D1S_PLUGIN_NAME    "HIMILL_D1S"
-#define HIMILL_D1S_PLUGIN_VERSION "0.9"
+#define HIMILL_D1S_PLUGIN_VERSION "0.10"
 
 // STM32F103's factory-burned ROM bootloader (System Memory region).
 // Speaks standard USB DFU → dfu-util works out of the box on any OS.
@@ -1275,6 +1275,12 @@ static bool himill_sd_reclaim_from_esp3d (void)
     uint_fast8_t line_len = 0;
     uint32_t start = hal.get_elapsed_ticks();
 
+    // While waiting for the ACK/BUSY reply this loop consumes UART2 bytes
+    // wholesale: realtime characters never reach the ring (mux_uart_enqueue_rt
+    // intercepts them at enqueue time), but ordinary command lines ESP3D
+    // forwards inside this window (<= D1S_SD_TAKE_TIMEOUT_MS) are dropped.
+    // ESP3D must pause client forwarding between receiving [D1S_SD_TAKE]
+    // and replying.
     mux_uart_write_direct("[D1S_SD_TAKE]" ASCII_EOL);
 
     do {
@@ -2028,6 +2034,9 @@ static status_code_t himill_user_command (char *line)
             mux_uart_write_direct("[D1S_SD_BUSY:state]" ASCII_EOL);
         else if (himill_sd_job_active())
             mux_uart_write_direct("[D1S_SD_BUSY:file]" ASCII_EOL);
+        // Mid-upload release would unmount FatFs under the open upload file.
+        else if (d1s_upload.active)
+            mux_uart_write_direct("[D1S_SD_BUSY:upload]" ASCII_EOL);
         else if (!sdcard_release_to_external())
             mux_uart_write_direct("[D1S_SD_BUSY:unmount]" ASCII_EOL);
         else

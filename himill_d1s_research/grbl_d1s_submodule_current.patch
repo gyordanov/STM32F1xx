@@ -695,7 +695,7 @@ index 909d9f0..d4e5cf0 100644
      };
  
 diff --git i/protocol.c w/protocol.c
-index ad00169..3e1f53f 100644
+index ad00169..d9a4605 100644
 --- i/protocol.c
 +++ w/protocol.c
 @@ -38,6 +38,10 @@
@@ -709,10 +709,37 @@ index ad00169..3e1f53f 100644
  // Define line flags. Includes comment type tracking and line overflow detection.
  typedef union {
      uint8_t value;
-@@ -56,6 +60,21 @@ static char line[LINE_BUFFER_SIZE]; // Line to be executed. Zero-terminated.
+@@ -56,6 +60,48 @@ static char line[LINE_BUFFER_SIZE]; // Line to be executed. Zero-terminated.
  static char xcommand[LINE_BUFFER_SIZE];
  static bool keep_rt_commands = false;
  
++#if defined(BOARD_HIMILL_D1S) && D1S_SDDBG_ENABLE
++static void d1s_gcdbg_report (status_code_t status_code, const char *block)
++{
++    uint_fast16_t n = 0;
++
++    hal.stream.write("[MSG:GCDBG status=");
++    hal.stream.write(uitoa((uint32_t)status_code));
++    hal.stream.write(" text=");
++
++    while(*block && n++ < 96) {
++        char ch = *block++;
++
++        if(ch < ' ' || ch > '~' || ch == '[' || ch == ']' || ch == '|')
++            ch = '?';
++
++        hal.stream.write_char(ch);
++    }
++
++    if(*block)
++        hal.stream.write("+");
++
++    hal.stream.write("]" ASCII_EOL);
++}
++#else
++#define d1s_gcdbg_report(status_code, block)
++#endif
++
 +#if NVSDATA_BUFFER_ENABLE && NVS_SYNC_IDLE_DELAY_MS
 +static uint32_t nvs_sync_not_before = 0;
 +
@@ -731,7 +758,7 @@ index ad00169..3e1f53f 100644
  static void protocol_exec_rt_suspend (sys_state_t state);
  
  // add gcode to execute not originating from normal input stream
-@@ -209,6 +228,10 @@ bool protocol_main_loop (void)
+@@ -209,6 +255,10 @@ bool protocol_main_loop (void)
          // initial filtering by removing leading spaces and control characters.
          while((c = hal.stream.read()) != SERIAL_NO_DATA) {
  
@@ -742,7 +769,19 @@ index ad00169..3e1f53f 100644
              if(c == ASCII_CAN) {
  
                  eol = xcommand[0] = '\0';
-@@ -410,7 +433,11 @@ bool protocol_execute_realtime (void)
+@@ -268,8 +318,10 @@ bool protocol_main_loop (void)
+                 else { // Parse and execute g-code block.
+ 
+ #endif
+-                    if((gc_state.last_error = gc_execute_block(line)) != Status_OK)
++                    if((gc_state.last_error = gc_execute_block(line)) != Status_OK) {
++                        d1s_gcdbg_report(gc_state.last_error, line);
+                         eol = '\0';
++                    }
+                 }
+ 
+                 // Add a short delay for each block processed in Check Mode to
+@@ -410,7 +462,11 @@ bool protocol_execute_realtime (void)
              protocol_exec_rt_suspend(state);
  
  #if NVSDATA_BUFFER_ENABLE
@@ -755,7 +794,7 @@ index ad00169..3e1f53f 100644
              nvs_buffer_sync_physical();
  #endif
      }
-@@ -424,6 +451,10 @@ FLASHMEM static void protocol_poll_cmd (void)
+@@ -424,6 +480,10 @@ FLASHMEM static void protocol_poll_cmd (void)
  
      if((c = hal.stream.read()) != SERIAL_NO_DATA) {
  
