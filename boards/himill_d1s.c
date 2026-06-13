@@ -91,6 +91,171 @@ static uint32_t himill_get_free_mem (void)
     return heap_end < stack_ptr ? (uint32_t)(stack_ptr - heap_end) : 0;
 }
 
+// Compact D1S reset/crash breadcrumbs.  LR=reset, LC=crash, LCC=clear.
+#define D1S_RD_MAGIC 0xD15C0103UL
+#ifndef D1S_RESET_DIAG_CLEAR_COMMAND
+#define D1S_RESET_DIAG_CLEAR_COMMAND 1
+#endif
+
+enum {
+    D1S_RD_MAGIC_W = 0,
+    D1S_RD_SEQ_W,
+    D1S_RD_CSR_W,
+    D1S_RD_FAULT_W,
+    D1S_RD_PC_W,
+    D1S_RD_RA_W,
+    D1S_RD_CS_W,
+    D1S_RD_HS_W,
+    D1S_RD_MS_W,
+    D1S_RD_WORDS
+};
+
+static void d1s_rd_access (void)
+{
+    __HAL_RCC_PWR_CLK_ENABLE();
+    __HAL_RCC_BKP_CLK_ENABLE();
+    HAL_PWR_EnableBkUpAccess();
+}
+
+static volatile uint32_t *d1s_bkp_dr (uint_fast8_t n)
+{
+    return n < 10 ? (&BKP->DR1 + n) : (&BKP->DR11 + (n - 10));
+}
+
+static uint32_t d1s_rd_get (uint_fast8_t word)
+{
+    uint_fast8_t reg = word << 1;
+    return (*d1s_bkp_dr(reg) & 0xFFFFUL) | ((*d1s_bkp_dr(reg + 1) & 0xFFFFUL) << 16);
+}
+
+static void d1s_rd_set (uint_fast8_t word, uint32_t value)
+{
+    uint_fast8_t reg = word << 1;
+    *d1s_bkp_dr(reg) = value & 0xFFFFUL;
+    *d1s_bkp_dr(reg + 1) = value >> 16;
+}
+
+static void d1s_rd_init_if_needed (void)
+{
+    if(d1s_rd_get(D1S_RD_MAGIC_W) == D1S_RD_MAGIC)
+        return;
+    for(uint_fast8_t i = 0; i < D1S_RD_WORDS; i++)
+        d1s_rd_set(i, 0);
+    d1s_rd_set(D1S_RD_MAGIC_W, D1S_RD_MAGIC);
+}
+
+static char *d1s_hex32 (uint32_t v)
+{
+    static char buf[9];
+    static const char hex[] = "0123456789ABCDEF";
+    for(int_fast8_t i = 7; i >= 0; i--) {
+        buf[i] = hex[v & 0x0FUL];
+        v >>= 4;
+    }
+    buf[8] = '\0';
+    return buf;
+}
+
+static void d1s_wrsephex (uint32_t v)
+{
+    hal.stream.write(",");
+    hal.stream.write(d1s_hex32(v));
+}
+
+void himill_d1s_reset_diag_boot_capture (void)
+{
+    d1s_rd_access();
+    uint32_t csr = RCC->CSR;
+    d1s_rd_init_if_needed();
+    d1s_rd_set(D1S_RD_SEQ_W, d1s_rd_get(D1S_RD_SEQ_W) + 1);
+    d1s_rd_set(D1S_RD_CSR_W, csr);
+    __DSB();
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+}
+
+void himill_d1s_reset_diag_fault (uint32_t fault_type, uint32_t *stack)
+{
+    d1s_rd_access();
+    d1s_rd_init_if_needed();
+    d1s_rd_set(D1S_RD_FAULT_W, fault_type);
+    d1s_rd_set(D1S_RD_PC_W, stack ? stack[6] : 0);
+    d1s_rd_set(D1S_RD_RA_W, stack ? stack[5] : 0);
+    d1s_rd_set(D1S_RD_CS_W, SCB->CFSR);
+    d1s_rd_set(D1S_RD_HS_W, SCB->HFSR);
+    d1s_rd_set(D1S_RD_MS_W, HAL_GetTick());
+    __DSB();
+    NVIC_SystemReset();
+}
+
+static void d1s_reset_diag_report (void)
+{
+    d1s_rd_access();
+    d1s_rd_init_if_needed();
+
+    hal.stream.write("[LR:");
+    hal.stream.write(d1s_hex32(d1s_rd_get(D1S_RD_CSR_W)));
+    hal.stream.write(",");
+    hal.stream.write(uitoa(d1s_rd_get(D1S_RD_SEQ_W)));
+    hal.stream.write("]" ASCII_EOL);
+
+    uint32_t fault = d1s_rd_get(D1S_RD_FAULT_W);
+    if(fault) {
+        hal.stream.write("[LC:");
+        hal.stream.write(uitoa(fault));
+        d1s_wrsephex(d1s_rd_get(D1S_RD_PC_W));
+        d1s_wrsephex(d1s_rd_get(D1S_RD_RA_W));
+        d1s_wrsephex(d1s_rd_get(D1S_RD_CS_W));
+        d1s_wrsephex(d1s_rd_get(D1S_RD_HS_W));
+        hal.stream.write(",");
+        hal.stream.write(uitoa(d1s_rd_get(D1S_RD_MS_W)));
+        hal.stream.write(",");
+        hal.stream.write(uitoa(d1s_rd_get(D1S_RD_SEQ_W)));
+        hal.stream.write("]" ASCII_EOL);
+    }
+}
+
+static void d1s_report_uptime (void)
+{
+    if(!hal.get_elapsed_ticks)
+        return;
+
+    uint32_t sec = hal.get_elapsed_ticks() / 1000U;
+    uint32_t h = sec / 3600U;
+    uint32_t m = (sec % 3600U) / 60U;
+    uint32_t s = sec % 60U;
+
+    hal.stream.write("[UPTIME:");
+    hal.stream.write(uitoa(h));
+    hal.stream.write("h ");
+    hal.stream.write(uitoa(m));
+    hal.stream.write("m ");
+    hal.stream.write(uitoa(s));
+    hal.stream.write("s]" ASCII_EOL);
+}
+
+#if D1S_RESET_DIAG_CLEAR_COMMAND
+static status_code_t d1s_lcc_command (sys_state_t state, char *args)
+{
+    UNUSED(state);
+    UNUSED(args);
+    d1s_rd_access();
+    d1s_rd_init_if_needed();
+    for(uint_fast8_t i = D1S_RD_FAULT_W; i < D1S_RD_WORDS; i++)
+        d1s_rd_set(i, 0);
+    hal.stream.write("[LCC:OK]" ASCII_EOL);
+    return Status_OK;
+}
+
+static const sys_command_t d1s_reset_diag_command_list[] = {
+    {"LCC", d1s_lcc_command, { .noargs = On }, { .str = "" } }
+};
+
+static sys_commands_t d1s_reset_diag_commands = {
+    .n_commands = sizeof(d1s_reset_diag_command_list) / sizeof(sys_command_t),
+    .commands = d1s_reset_diag_command_list
+};
+#endif
+
 #if RGB_LED_ENABLE == 2
 
 #define HIMILL_FRONT_RGB_LEDS  24
@@ -2520,6 +2685,8 @@ static void on_report_options_himill (bool newopt)
         if (himill_settings.magic != HIMILL_SETTINGS_MAGIC)
             hal.stream.write(" ERR:SET");
         hal.stream.write("]" ASCII_EOL);
+        d1s_report_uptime();
+        d1s_reset_diag_report();
     }
 }
 
@@ -2553,6 +2720,9 @@ void board_init (void)
 
     on_report_options       = grbl.on_report_options;
     grbl.on_report_options  = on_report_options_himill;
+#if D1S_RESET_DIAG_CLEAR_COMMAND
+    system_register_commands(&d1s_reset_diag_commands);
+#endif
 
 #if FS_ENABLE & FS_SDCARD
     on_realtime_report      = grbl.on_realtime_report;

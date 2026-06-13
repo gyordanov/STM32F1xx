@@ -1,7 +1,7 @@
-diff --git i/macros.c w/macros.c
+diff --git a/macros.c b/macros.c
 index 9d32141..99a71b7 100644
---- i/macros.c
-+++ w/macros.c
+--- a/macros.c
++++ b/macros.c
 @@ -476,6 +476,7 @@ PROGMEM static const setting_detail_t macro_settings[] = {
  #endif
  };

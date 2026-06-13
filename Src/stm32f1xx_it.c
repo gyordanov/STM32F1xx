@@ -79,6 +79,31 @@ void NMI_Handler(void)
   /* USER CODE END NonMaskableInt_IRQn 1 */
 }
 
+#if defined(BOARD_HIMILL_D1S)
+#ifndef D1S_RESET_DIAG_FAULT_RESET
+#define D1S_RESET_DIAG_FAULT_RESET 1
+#endif
+#endif
+
+#if defined(BOARD_HIMILL_D1S) && D1S_RESET_DIAG_FAULT_RESET
+#define D1S_FAULT_HANDLER(name, type_id)                         \
+void name(void) {                                                \
+    uint32_t *sp;                                                \
+    __asm volatile (                                             \
+        "TST   LR, #4     \n"                                  \
+        "ITE   EQ         \n"                                  \
+        "MRSEQ %0, MSP    \n"                                  \
+        "MRSNE %0, PSP    \n"                                  \
+        : "=r" (sp)                                              \
+    );                                                           \
+    himill_d1s_reset_diag_fault(type_id, sp);                    \
+}
+
+D1S_FAULT_HANDLER(HardFault_Handler,  1)
+D1S_FAULT_HANDLER(MemManage_Handler,  2)
+D1S_FAULT_HANDLER(BusFault_Handler,   3)
+D1S_FAULT_HANDLER(UsageFault_Handler, 4)
+#else
 /**
   * @brief This function handles Hard fault interrupt.
   */
@@ -138,6 +163,7 @@ void UsageFault_Handler(void)
     /* USER CODE END W1_UsageFault_IRQn 0 */
   }
 }
+#endif
 
 /**
   * @brief This function handles System service call via SWI instruction.

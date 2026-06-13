@@ -1,7 +1,7 @@
-diff --git i/fs_fatfs.c w/fs_fatfs.c
+diff --git a/fs_fatfs.c b/fs_fatfs.c
 index 851b283..e821f12 100644
---- i/fs_fatfs.c
-+++ w/fs_fatfs.c
+--- a/fs_fatfs.c
++++ b/fs_fatfs.c
 @@ -87,7 +87,8 @@ FLASHMEM static vfs_file_t *fs_open (const char *filename, const char *mode)
              file = NULL;
          } else
@@ -34,10 +34,10 @@ index 851b283..e821f12 100644
  #endif
      }
  
-diff --git i/fs_stream.c w/fs_stream.c
+diff --git a/fs_stream.c b/fs_stream.c
 index 6f4cc74..8968a7c 100644
---- i/fs_stream.c
-+++ w/fs_stream.c
+--- a/fs_stream.c
++++ b/fs_stream.c
 @@ -21,6 +21,12 @@
  
  #include "sdcard.h"
@@ -553,10 +553,10 @@ index 6f4cc74..8968a7c 100644
      };
  
      static error_details_t error_details = {
-diff --git i/macros.c w/macros.c
+diff --git a/macros.c b/macros.c
 index b98bf09..c971cf1 100644
---- i/macros.c
-+++ w/macros.c
+--- a/macros.c
++++ b/macros.c
 @@ -392,16 +392,23 @@ FLASHMEM void fs_macros_init (void)
          { Setting_MacroATC_Options, Group_Toolchange, "Macro ATC options", NULL, Format_Bitfield, "Execute M6T0,Fail M6 if tc.macro not found", NULL, NULL, Setting_IsExtended, &settings.macro_atc_flags.value, NULL },
      };
@@ -581,10 +581,10 @@ index b98bf09..c971cf1 100644
          .restore = macro_settings_restore,
          .save = settings_write_global
      };
-diff --git i/sdcard.c w/sdcard.c
+diff --git a/sdcard.c b/sdcard.c
 index e256028..a108cae 100644
---- i/sdcard.c
-+++ w/sdcard.c
+--- a/sdcard.c
++++ b/sdcard.c
 @@ -21,6 +21,12 @@
  
  #include "sdcard.h"
@@ -664,10 +664,10 @@ index e256028..a108cae 100644
      };
  
      static error_details_t error_details = {
-diff --git i/sdcard.h w/sdcard.h
+diff --git a/sdcard.h b/sdcard.h
 index 2083e34..b6a8420 100644
---- i/sdcard.h
-+++ w/sdcard.h
+--- a/sdcard.h
++++ b/sdcard.h
 @@ -67,6 +67,7 @@ void sdcard_early_mount (void);
  void sdcard_set_reclaim_callback (on_reclaim_ptr on_reclaim);
  bool sdcard_release_to_external (void);

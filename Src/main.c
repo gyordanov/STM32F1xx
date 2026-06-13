@@ -29,6 +29,9 @@ void SystemClock_Config(void);
 
 int main(void)
 {
+#if defined(BOARD_HIMILL_D1S)
+    himill_d1s_reset_diag_boot_capture();
+#endif
     HAL_Init();
     SystemClock_Config();
 

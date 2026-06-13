@@ -1,7 +1,7 @@
-diff --git i/alarms.c w/alarms.c
+diff --git a/alarms.c b/alarms.c
 index 96962f7..093366d 100644
---- i/alarms.c
-+++ w/alarms.c
+--- a/alarms.c
++++ b/alarms.c
 @@ -26,28 +26,34 @@
  #include "grbl.h"
  #include "core_handlers.h"
@@ -58,10 +58,10 @@ index 96962f7..093366d 100644
  };
  
  static alarm_details_t details = {
-diff --git i/errors.c w/errors.c
+diff --git a/errors.c b/errors.c
 index 6606930..7383571 100644
---- i/errors.c
-+++ w/errors.c
+--- a/errors.c
++++ b/errors.c
 @@ -26,90 +26,96 @@
  #include "grbl.h"
  #include "core_handlers.h"
@@ -235,10 +235,10 @@ index 6606930..7383571 100644
  };
  
  static error_details_t details = {
-diff --git i/gcode.c w/gcode.c
+diff --git a/gcode.c b/gcode.c
 index bda6249..7621dbe 100644
---- i/gcode.c
-+++ w/gcode.c
+--- a/gcode.c
++++ b/gcode.c
 @@ -314,6 +314,102 @@ inline static float gc_get_block_offset (parser_block_t *gc_block, uint_fast8_t
      return gc_block->modal.g5x_offset.data.coord.values[idx] + gc_state.g92_offset.coord.values[idx] + gc_state.modal.tool_length_offset[idx];
  }
@@ -647,10 +647,10 @@ index bda6249..7621dbe 100644
                      system_flag_wco_change();
                  }
              }
-diff --git i/gcode.h w/gcode.h
+diff --git a/gcode.h b/gcode.h
 index 961e03a..941518b 100644
---- i/gcode.h
-+++ w/gcode.h
+--- a/gcode.h
++++ b/gcode.h
 @@ -752,6 +752,9 @@ float *gc_get_scaling (void);
  // Get current axis offset.
  float gc_get_offset (uint_fast8_t idx, bool real_time);
@@ -661,10 +661,10 @@ index 961e03a..941518b 100644
  void gc_clear_offset (coord_system_id_t id);
  
  char *gc_coord_system_to_str (coord_system_id_t id);
-diff --git i/ioports.c w/ioports.c
+diff --git a/ioports.c b/ioports.c
 index 909d9f0..d4e5cf0 100644
---- i/ioports.c
-+++ w/ioports.c
+--- a/ioports.c
++++ b/ioports.c
 @@ -1429,12 +1429,14 @@ PROGMEM static const setting_detail_t ioport_settings[] = {
  //    { Settings_IoPort_OD_Enable, Group_AuxPorts, "I/O Port outputs as open drain", NULL, Format_Bitfield, digital.out.port_names, NULL, NULL, Setting_NonCoreFn, aux_set_value, aux_get_value, is_setting_available }
  };
@@ -694,10 +694,10 @@ index 909d9f0..d4e5cf0 100644
          .save = settings_write_global
      };
  
-diff --git i/protocol.c w/protocol.c
+diff --git a/protocol.c b/protocol.c
 index ad00169..d9a4605 100644
---- i/protocol.c
-+++ w/protocol.c
+--- a/protocol.c
++++ b/protocol.c
 @@ -38,6 +38,10 @@
  #define RT_QUEUE_SIZE 16 // must be a power of 2
  #endif
@@ -805,10 +805,10 @@ index ad00169..d9a4605 100644
          if ((c == '\n') || (c == '\r')) { // End of line reached
              line[char_counter] = '\0';
              gc_state.last_error = *line == '\0' ? Status_OK : (*line == '$' ? system_execute_line(line) : Status_SystemGClock);
-diff --git i/report.c w/report.c
+diff --git a/report.c b/report.c
 index 6a9cbb4..5ba5b4b 100644
---- i/report.c
-+++ w/report.c
+--- a/report.c
++++ b/report.c
 @@ -309,7 +309,11 @@ FLASHMEM static void report_init_message (stream_write_ptr write)
      hal.stream.report.override_counter = hal.stream.report.wco_counter = 0;
  
@@ -840,10 +840,10 @@ index 6a9cbb4..5ba5b4b 100644
      }
  
      // Report position
-diff --git i/settings.c w/settings.c
+diff --git a/settings.c b/settings.c
 index abaa6f2..6ded4ad 100644
---- i/settings.c
-+++ w/settings.c
+--- a/settings.c
++++ b/settings.c
 @@ -2327,6 +2327,7 @@ PROGMEM static const setting_detail_t setting_detail[] = {
       { Setting_SubroutineOptions, Group_General, "Subroutine options", NULL, Format_Bitfield, "Prescan for internal M98 subroutines", NULL, NULL, Setting_IsExtendedFn, set_suboptions, get_int, is_setting_available }
  };
@@ -928,10 +928,10 @@ index abaa6f2..6ded4ad 100644
      return true;
  }
  
-diff --git i/system.c w/system.c
+diff --git a/system.c b/system.c
 index a9d3580..e6625ba 100644
---- i/system.c
-+++ w/system.c
+--- a/system.c
++++ b/system.c
 @@ -913,29 +913,37 @@ FLASHMEM const char *help_reboot (const char *cmd)
  
  /*! \brief Command dispatch table
@@ -1074,10 +1074,10 @@ index a9d3580..e6625ba 100644
  #endif
  };
  
-diff --git i/tool_change.c w/tool_change.c
+diff --git a/tool_change.c b/tool_change.c
 index 4235853..c11d692 100644
---- i/tool_change.c
-+++ w/tool_change.c
+--- a/tool_change.c
++++ b/tool_change.c
 @@ -156,6 +156,8 @@ FLASHMEM static bool restore (void)
  
          if(!settings.flags.no_restore_position_after_M6) {
@@ -1087,10 +1087,10 @@ index 4235853..c11d692 100644
              mc_line(previous.values, &plan_data);
          }
      }
-diff --git i/vfs.c w/vfs.c
+diff --git a/vfs.c b/vfs.c
 index 679c7d6..d73a1ff 100644
---- i/vfs.c
-+++ w/vfs.c
+--- a/vfs.c
++++ b/vfs.c
 @@ -591,8 +591,6 @@ bool vfs_mount (const char *path, const vfs_t *fs, vfs_st_mode_t mode)
          root.mode = mode;
      } else if((mount = (vfs_mount_t *)calloc(1, sizeof(vfs_mount_t)))) {

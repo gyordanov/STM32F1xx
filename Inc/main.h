@@ -54,7 +54,10 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+#if defined(BOARD_HIMILL_D1S)
+void himill_d1s_reset_diag_boot_capture (void);
+void himill_d1s_reset_diag_fault (uint32_t fault_type, uint32_t *stack);
+#endif
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
