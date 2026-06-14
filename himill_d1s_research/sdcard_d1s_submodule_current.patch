@@ -35,7 +35,7 @@ index 851b283..e821f12 100644
      }
  
 diff --git a/fs_stream.c b/fs_stream.c
-index 6f4cc74..8968a7c 100644
+index 6f4cc74..7979754 100644
 --- a/fs_stream.c
 +++ b/fs_stream.c
 @@ -21,6 +21,12 @@
@@ -51,15 +51,16 @@ index 6f4cc74..8968a7c 100644
  #if FS_ENABLE
  
  #include <stdio.h>
-@@ -31,6 +37,7 @@
+@@ -31,6 +37,8 @@
  
  #include "grbl/report.h"
  #include "grbl/protocol.h"
 +#include "grbl/gcode.h"
++#include "grbl/nuts_bolts.h"
  #include "grbl/state_machine.h"
  #include "grbl/stream_file.h"
  #include "grbl/strutils.h"
-@@ -80,6 +87,7 @@ typedef struct
+@@ -80,6 +88,7 @@ typedef struct
      line_number_t line_number;
      uint8_t eol;
      bool scan_subs;
@@ -67,7 +68,7 @@ index 6f4cc74..8968a7c 100644
  } file_t;
  
  static file_t file = {
-@@ -88,12 +96,171 @@ static file_t file = {
+@@ -88,12 +97,171 @@ static file_t file = {
      .pos = 0
  };
  
@@ -240,11 +241,12 @@ index 6f4cc74..8968a7c 100644
  static io_stream_t active_stream;
  static driver_reset_ptr driver_reset = NULL;
  static on_realtime_report_ptr on_realtime_report;
-@@ -110,16 +277,19 @@ static on_vfs_unmount_ptr on_vfs_unmount;
+@@ -110,16 +278,20 @@ static on_vfs_unmount_ptr on_vfs_unmount;
  
  static void onCycleStart (void);
  static void stream_end_job (bool flush);
 +static void stream_abort_on_error (void);
++static bool format_file_list_entry (char *buf, const char *path, bool add_sep, const char *name, const char *size, const char *suffix);
  static void onRealtimeReport (stream_write_ptr stream_write, report_tracking_flags_t report);
  static status_code_t trap_status_messages (status_code_t status_code);
  static line_number_t onLineNumberAssigned (line_number_t line_number);
@@ -261,7 +263,21 @@ index 6f4cc74..8968a7c 100644
          report_message("SD card owned externally", Message_Warning);
          return Status_SDNotMounted;
      }
-@@ -267,7 +437,11 @@ FLASHMEM static bool file_open (char *filename)
+@@ -190,11 +362,11 @@ static int scan_dir (char *path, uint_fast8_t depth, char *buf, bool filtered)
+         subdirs |= depth > 0 && dirent->st_mode.directory && !dirent->st_mode.hidden;
+ 
+         if(!(dirent->st_mode.directory || dirent->st_mode.hidden) && (status = filtered ? allowed(dirent->name, true) : filename_valid(dirent->name)) != Filename_Filtered) {
+-            if(snprintf(buf, BUFLEN, "[FILE:%s%s%s|SIZE:" UINT32FMT "%s]" ASCII_EOL, path, add_sep ? "/" : "", dirent->name, (uint32_t)dirent->size, status == Filename_Invalid ? "|UNUSABLE" : "") < BUFLEN)
++            if(format_file_list_entry(buf, path, add_sep, dirent->name, uitoa((uint32_t)dirent->size), status == Filename_Invalid ? "|UNUSABLE" : ""))
+                 hal.stream.write(buf);
+         }
+ 
+-        if(depth == 0 && dirent->st_mode.directory && !dirent->st_mode.hidden && snprintf(buf, BUFLEN, "[FILE:%s%s|SIZE:-1]" ASCII_EOL, path, dirent->name))
++        if(depth == 0 && dirent->st_mode.directory && !dirent->st_mode.hidden && format_file_list_entry(buf, path, false, dirent->name, "-1", ""))
+             hal.stream.write(buf);
+ 
+         grbl.on_execute_realtime(state_get());
+@@ -267,7 +439,11 @@ FLASHMEM static bool file_open (char *filename)
          file.size = st.st_size;
          file.pos = file.eol = 0;
          file.line_number = 1;
@@ -273,7 +289,7 @@ index 6f4cc74..8968a7c 100644
          char *leafname = strrchr(filename, '/');
          strncpy(file.name, leafname ? leafname + 1 : filename, sizeof(file.name));
          file.name[sizeof(file.name) - 1] = '\0';
-@@ -281,16 +455,24 @@ FLASHMEM static void file_rewind (void)
+@@ -281,16 +457,59 @@ FLASHMEM static void file_rewind (void)
      vfs_seek(file.handle, 0);
      file.pos = file.eol = 0;
      file.line_number = 1;
@@ -281,6 +297,41 @@ index 6f4cc74..8968a7c 100644
 +    file_readbuf_reset();
 +    d1s_sddbg_reset(file.line_number);
 +    d1s_sddbg_verify_reset();
++}
++
++static bool append_limited (char *dst, const char *src, size_t size)
++{
++    size_t dst_len = strlen(dst), src_len = strlen(src);
++
++    if(dst_len + src_len >= size)
++        return false;
++
++    memcpy(dst + dst_len, src, src_len + 1);
++
++    return true;
++}
++
++static bool format_file_list_entry (char *buf, const char *path, bool add_sep, const char *name, const char *size, const char *suffix)
++{
++    *buf = '\0';
++
++    return append_limited(buf, "[FILE:", BUFLEN) &&
++            append_limited(buf, path, BUFLEN) &&
++            (!add_sep || append_limited(buf, "/", BUFLEN)) &&
++            append_limited(buf, name, BUFLEN) &&
++            append_limited(buf, "|SIZE:", BUFLEN) &&
++            append_limited(buf, size, BUFLEN) &&
++            append_limited(buf, suffix, BUFLEN) &&
++            append_limited(buf, "]" ASCII_EOL, BUFLEN);
++}
++
++static void stream_write_sd_file_error (status_code_t status_code)
++{
++    hal.stream.write("error:");
++    hal.stream.write(uitoa((uint8_t)status_code));
++    hal.stream.write(" in SD file at line ");
++    hal.stream.write(uitoa(file.line_number));
++    hal.stream.write(ASCII_EOL);
  }
  
  static int16_t file_read (void)
@@ -299,18 +350,15 @@ index 6f4cc74..8968a7c 100644
  
      if(c == ASCII_CR || c == ASCII_LF) {
          if(file.eol && c != file.eol)
-@@ -303,6 +485,24 @@ static int16_t file_read (void)
+@@ -303,6 +522,21 @@ static int16_t file_read (void)
      return (int16_t)c;
  }
  
 +static void stream_abort_on_read_error (void)
 +{
-+    char buf[50];
-+
-+    sprintf(buf, "error:%d in SD file at line " UINT32FMT ASCII_EOL, (uint8_t)Status_FileReadError, file.line_number);
 +    d1s_sddbg_msg("READERR");
 +    d1s_sddbg_report();
-+    hal.stream.write(buf);
++    stream_write_sd_file_error(Status_FileReadError);
 +
 +    // CMD_STOP also discards the partial line the protocol loop has
 +    // accumulated — without it a truncated motion word (e.g. "Y2" left from
@@ -324,7 +372,7 @@ index 6f4cc74..8968a7c 100644
  FLASHMEM static status_code_t list_files (bool filtered)
  {
      char path[MAX_PATHLEN] = "", name[BUFLEN]; // NB! also used as work area when recursing directories
-@@ -320,6 +520,8 @@ FLASHMEM static status_code_t list_files (bool filtered)
+@@ -320,6 +554,8 @@ FLASHMEM static status_code_t list_files (bool filtered)
  
  FLASHMEM static void stream_end_job (bool flush)
  {
@@ -333,7 +381,7 @@ index 6f4cc74..8968a7c 100644
      file_close();
  
      if(grbl.on_program_completed == onProgramCompleted)
-@@ -351,19 +553,32 @@ FLASHMEM static void stream_end_job (bool flush)
+@@ -351,19 +587,32 @@ FLASHMEM static void stream_end_job (bool flush)
      if(flush)                                                           // Flush input buffer?
          hal.stream.reset_read_buffer();                                 // Yes, do it.
  
@@ -368,7 +416,7 @@ index 6f4cc74..8968a7c 100644
  
      if(file.handle) {
  
-@@ -372,7 +587,13 @@ static int32_t stream_read (void)
+@@ -372,7 +621,13 @@ static int32_t stream_read (void)
  
          if(c == SERIAL_NO_DATA) { // EOF, error reading or grblHAL problem
  
@@ -383,7 +431,7 @@ index 6f4cc74..8968a7c 100644
                  hal.stream.state.m98_macro_prescan = file.scan_subs = false;
                  file_rewind();
                  state_set(STATE_IDLE);
-@@ -388,6 +609,9 @@ static int32_t stream_read (void)
+@@ -388,6 +643,9 @@ static int32_t stream_read (void)
          grbl.report.feedback_message(Message_ProgramEnd);
      }
  
@@ -393,18 +441,21 @@ index 6f4cc74..8968a7c 100644
      return c;
  }
  
-@@ -428,8 +652,10 @@ static status_code_t trap_status_messages (status_code_t status_code)
+@@ -426,10 +684,10 @@ static status_code_t trap_status_messages (status_code_t status_code)
+     else if(status_code != Status_OK) {
+ 
          // TODO: all errors should terminate job?
-         char buf[50]; // TODO: check if extended error reports are permissible
-         sprintf(buf, "error:%d in SD file at line " UINT32FMT ASCII_EOL, (uint8_t)status_code, file.line_number);
+-        char buf[50]; // TODO: check if extended error reports are permissible
+-        sprintf(buf, "error:%d in SD file at line " UINT32FMT ASCII_EOL, (uint8_t)status_code, file.line_number);
+-        hal.stream.write(buf);
 +        d1s_sddbg_report();
-         hal.stream.write(buf);
++        stream_write_sd_file_error(status_code);
  
 +        stream_abort_on_error();
          stream_end_job(true);
          grbl.report.status_message(status_code);
      }
-@@ -550,24 +776,22 @@ FLASHMEM static void stream_changed (stream_type_t type)
+@@ -550,24 +808,22 @@ FLASHMEM static void stream_changed (stream_type_t type)
  {
      if(type != StreamType_File && file.handle != NULL) {
  
@@ -445,7 +496,7 @@ index 6f4cc74..8968a7c 100644
      }
  
      if(on_stream_changed)
-@@ -579,25 +803,30 @@ FLASHMEM status_code_t stream_file (sys_state_t state, char *fname)
+@@ -579,25 +835,30 @@ FLASHMEM status_code_t stream_file (sys_state_t state, char *fname)
      vfs_stat_t st;
      status_code_t retval = Status_Unhandled;
  
@@ -481,7 +532,7 @@ index 6f4cc74..8968a7c 100644
              if(!(grbl.on_file_open && (retval = grbl.on_file_open(fname, file.handle, true)) == Status_OK)) {
  
                  memcpy(&active_stream, &hal.stream, sizeof(io_stream_t));   // Save current stream pointers
-@@ -635,11 +864,18 @@ FLASHMEM status_code_t stream_file (sys_state_t state, char *fname)
+@@ -635,11 +896,18 @@ FLASHMEM status_code_t stream_file (sys_state_t state, char *fname)
                  }
  
                  retval = Status_OK;
@@ -502,7 +553,17 @@ index 6f4cc74..8968a7c 100644
  
      return retval;
  }
-@@ -903,7 +1139,13 @@ FLASHMEM static void onReportOptions (bool newopt)
+@@ -848,7 +1116,8 @@ FLASHMEM static void onReset (void)
+     if(hal.stream.type == StreamType_File && active_stream.type != StreamType_Null) {
+         if(file.line_number) {
+             char buf[70];
+-            sprintf(buf, "Reset during streaming of file at line: " UINT32FMT, file.line_number);
++            strcpy(buf, "Reset during streaming of file at line: ");
++            strcat(buf, uitoa(file.line_number));
+             report_message(buf, Message_Plain);
+         } else if(frewind)
+             grbl.report.feedback_message(Message_None);
+@@ -903,7 +1172,13 @@ FLASHMEM static void onReportOptions (bool newopt)
  
  FLASHMEM static void onFsUnmount (const char *path)
  {
@@ -517,7 +578,7 @@ index 6f4cc74..8968a7c 100644
  
      if(on_vfs_unmount)
          on_vfs_unmount(path);
-@@ -913,7 +1155,13 @@ FLASHMEM static void onFsMount (const char *path, const vfs_t *vfs, vfs_st_mode_
+@@ -913,7 +1188,13 @@ FLASHMEM static void onFsMount (const char *path, const vfs_t *vfs, vfs_st_mode_
  {
      if(!mode.hidden) {
  
@@ -532,7 +593,7 @@ index 6f4cc74..8968a7c 100644
          fs.mode = mode;
  
          if(driver_reset == NULL) {
-@@ -955,13 +1203,13 @@ FLASHMEM void fs_stream_init (void)
+@@ -955,13 +1236,13 @@ FLASHMEM void fs_stream_init (void)
      };
  
      PROGMEM static const status_detail_t status_detail[] = {
@@ -554,10 +615,50 @@ index 6f4cc74..8968a7c 100644
  
      static error_details_t error_details = {
 diff --git a/macros.c b/macros.c
-index b98bf09..c971cf1 100644
+index b98bf09..2a8d6b6 100644
 --- a/macros.c
 +++ b/macros.c
-@@ -392,16 +392,23 @@ FLASHMEM void fs_macros_init (void)
+@@ -31,6 +31,7 @@
+ #include "grbl/tool_change.h"
+ #include "grbl/ngc_flowctrl.h"
+ #include "grbl/stream_file.h"
++#include "grbl/nuts_bolts.h"
+ #include "grbl/task.h"
+ 
+ #ifndef MACRO_STACK_DEPTH
+@@ -115,7 +116,11 @@ FLASHMEM static status_code_t onG65MacroError (status_code_t status_code)
+     if(stack_idx >= 0) {
+ 
+         char msg[40];
+-        sprintf(msg, "error %d in macro P%d.macro", (uint8_t)status_code, macro[stack_idx].id);
++        strcpy(msg, "error ");
++        strcat(msg, uitoa((uint8_t)status_code));
++        strcat(msg, " in macro P");
++        strcat(msg, uitoa(macro[stack_idx].id));
++        strcat(msg, ".macro");
+         report_message(msg, Message_Warning);
+ 
+         end_macro(true);
+@@ -215,12 +220,16 @@ FLASHMEM static status_code_t macro_execute (macro_id_t macro_id, line_number_t
+             char filename[32];
+ 
+ #if LITTLEFS_ENABLE == 1
+-            sprintf(filename, "/littlefs/P%d.macro", macro_id);
++            strcpy(filename, "/littlefs/P");
++            strcat(filename, uitoa(macro_id));
++            strcat(filename, ".macro");
+ 
+             if((status = macro_start(filename, macro_id, repeats, !args.$)) != Status_Handled)
+ #endif
+             {
+-                sprintf(filename, "/P%d.macro", macro_id);
++                strcpy(filename, "/P");
++                strcat(filename, uitoa(macro_id));
++                strcat(filename, ".macro");
+ 
+                 status = macro_start(filename, macro_id, repeats, !args.$);
+             }
+@@ -392,16 +401,23 @@ FLASHMEM void fs_macros_init (void)
          { Setting_MacroATC_Options, Group_Toolchange, "Macro ATC options", NULL, Format_Bitfield, "Execute M6T0,Fail M6 if tc.macro not found", NULL, NULL, Setting_IsExtended, &settings.macro_atc_flags.value, NULL },
      };
  

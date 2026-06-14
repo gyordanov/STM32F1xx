@@ -694,6 +694,130 @@ index 909d9f0..d4e5cf0 100644
          .save = settings_write_global
      };
  
+diff --git a/modbus_rtu.c b/modbus_rtu.c
+index 68f29cf..a5163ab 100644
+--- a/modbus_rtu.c
++++ b/modbus_rtu.c
+@@ -30,6 +30,7 @@
+ #include "settings.h"
+ #include "crc.h"
+ #include "nvs_buffer.h"
++#include "nuts_bolts.h"
+ #include "state_machine.h"
+ #include "modbus.h"
+ 
+@@ -545,8 +546,18 @@ FLASHMEM static status_code_t report_stats (sys_state_t state, char *args)
+     if(stats.no_rx)
+         report_message(stats.rx_count ? "Unstable connection to modbus device?" : "No connection to modbus device?", Message_Warning);
+ 
+-    snprintf(buf, sizeof(buf) - 1, "TX: " UINT32FMT ", retries: " UINT32FMT ", timeouts: " UINT32FMT ", RX exceptions: " UINT32FMT ", CRC errors: " UINT32FMT ", latency: " UINT32FMT,
+-              stats.tx_count, stats.retries, stats.timeouts, stats.rx_exceptions, stats.crc_errors, stats.latency);
++    strcpy(buf, "TX: ");
++    strcat(buf, uitoa(stats.tx_count));
++    strcat(buf, ", retries: ");
++    strcat(buf, uitoa(stats.retries));
++    strcat(buf, ", timeouts: ");
++    strcat(buf, uitoa(stats.timeouts));
++    strcat(buf, ", RX exceptions: ");
++    strcat(buf, uitoa(stats.rx_exceptions));
++    strcat(buf, ", CRC errors: ");
++    strcat(buf, uitoa(stats.crc_errors));
++    strcat(buf, ", latency: ");
++    strcat(buf, uitoa(stats.latency));
+     report_message(buf, Message_Info);
+ 
+     if(args && (*args == 'r' || *args == 'R'))
+diff --git a/ngc_flowctrl.c b/ngc_flowctrl.c
+index a8472e9..8baae3e 100644
+--- a/ngc_flowctrl.c
++++ b/ngc_flowctrl.c
+@@ -32,6 +32,7 @@
+ #include "errors.h"
+ #include "ngc_expr.h"
+ #include "ngc_params.h"
++#include "nuts_bolts.h"
+ #include "stream_file.h"
+ //#include "string_registers.h"
+ 
+@@ -384,7 +385,11 @@ FLASHMEM static status_code_t onNamedSubError (status_code_t status)
+                 char *name, msg[100];
+                 closing = true;
+                 if((name = ngc_string_param_get((ngc_string_id_t)o_label))) {
+-                    sprintf(msg, "error %d in named sub %s.macro", (uint8_t)status, name);
++                    strcpy(msg, "error ");
++                    strcat(msg, uitoa((uint8_t)status));
++                    strcat(msg, " in named sub ");
++                    strcat(msg, name);
++                    strcat(msg, ".macro");
+                     report_message(msg, Message_Warning);
+                 }
+             }
+@@ -674,14 +679,20 @@ FLASHMEM status_code_t ngc_flowctrl (uint32_t o_label, line_number_t line_number
+                             char filename[60];
+                             vfs_file_t *file;
+ #if LITTLEFS_ENABLE == 1
+-                            sprintf(filename, "/littlefs/%s.macro", subname);
++                            strcpy(filename, "/littlefs/");
++                            strcat(filename, subname);
++                            strcat(filename, ".macro");
+ 
+                             if((file = stream_redirect_read(filename, onNamedSubError, onNamedSubEOF)) == NULL) {
+-                                sprintf(filename, "/%s.macro", subname);
++                                strcpy(filename, "/");
++                                strcat(filename, subname);
++                                strcat(filename, ".macro");
+                                 file = stream_redirect_read(filename, onNamedSubError, onNamedSubEOF);
+                             }
+ #else
+-                            sprintf(filename, "/%s.macro", subname);
++                            strcpy(filename, "/");
++                            strcat(filename, subname);
++                            strcat(filename, ".macro");
+                             file = stream_redirect_read(filename, onNamedSubError, onNamedSubEOF);
+ #endif
+                             if(file) {
+diff --git a/ngc_params.c b/ngc_params.c
+index f948f73..b762fe4 100644
+--- a/ngc_params.c
++++ b/ngc_params.c
+@@ -1159,6 +1159,7 @@ FLASHMEM static status_code_t macro_get_tool_offset (parameter_words_t args)
+     return status;
+ }
+ 
++#if MODBUS_ENABLE
+ static void modbus_response_handler (modbus_response_t *response)
+ {
+     ngc_named_param_set("_value", (float)(response->exception ? response->exception : response->values[0]));
+@@ -1170,7 +1171,9 @@ static void modbus_response_handler (modbus_response_t *response)
+             ngc_named_param_set("_value2", (float)(response->exception ? response->exception : response->values[2]));
+     }
+ }
++#endif
+ 
++#if MODBUS_ENABLE
+ FLASHMEM static status_code_t macro_modbus_msg (parameter_words_t args)
+ {
+     float tmpvar;
+@@ -1217,6 +1220,7 @@ FLASHMEM static status_code_t macro_modbus_msg (parameter_words_t args)
+ 
+     return status;
+ }
++#endif
+ 
+ FLASHMEM static status_code_t onMacroExecute (macro_id_t macro_id, line_number_t line_number, parameter_words_t args, uint32_t repeats)
+ {
+@@ -1252,7 +1256,11 @@ FLASHMEM static status_code_t onMacroExecute (macro_id_t macro_id, line_number_t
+             break;
+ 
+         case G65Macro_ModbusMessage:
++#if MODBUS_ENABLE
+             status = modbus_isup().ok ? macro_modbus_msg(args) : Status_GcodeUnsupportedCommand;
++#else
++            status = Status_GcodeUnsupportedCommand;
++#endif
+             break;
+     }
+ 
 diff --git a/protocol.c b/protocol.c
 index ad00169..d9a4605 100644
 --- a/protocol.c
@@ -841,10 +965,37 @@ index 6a9cbb4..5ba5b4b 100644
  
      // Report position
 diff --git a/settings.c b/settings.c
-index abaa6f2..6ded4ad 100644
+index abaa6f2..0cc1aad 100644
 --- a/settings.c
 +++ b/settings.c
-@@ -2327,6 +2327,7 @@ PROGMEM static const setting_detail_t setting_detail[] = {
+@@ -1115,6 +1115,17 @@ static status_code_t set_force_initialization_alarm (setting_id_t id, uint_fast1
+     return Status_OK;
+ }
+ 
++static bool is_probe_protection_available (void)
++{
++    probe_flags_t caps = hal.probe.get_caps ? hal.probe.get_caps(Probe_Default) : (probe_flags_t){0};
++
++#if defined(BOARD_HIMILL_D1S)
++    return caps.available;
++#else
++    return caps.available && caps.watchable;
++#endif
++}
++
+ static status_code_t set_probe_flags (setting_id_t id, uint_fast16_t int_value)
+ {
+     settings.probe.allow_feed_override = bit_istrue(int_value, bit(0));
+@@ -1122,7 +1133,7 @@ static status_code_t set_probe_flags (setting_id_t id, uint_fast16_t int_value)
+ //    settings.probe.? = bit_istrue(int_value, bit(2));
+     settings.probe.toolsetter_auto_select = bit_istrue(int_value, bit(3)) && hal.driver_cap.toolsetter && hal.probe.select;
+     settings.probe.probe2_auto_select = bit_istrue(int_value, bit(4)) && hal.driver_cap.probe2 && hal.probe.select;
+-    settings.probe.enable_protection = bit_istrue(int_value, bit(5));
++    settings.probe.enable_protection = bit_istrue(int_value, bit(5)) && is_probe_protection_available();
+ 
+     hal.probe.configure(false, false);
+ 
+@@ -2327,6 +2338,7 @@ PROGMEM static const setting_detail_t setting_detail[] = {
       { Setting_SubroutineOptions, Group_General, "Subroutine options", NULL, Format_Bitfield, "Prescan for internal M98 subroutines", NULL, NULL, Setting_IsExtendedFn, set_suboptions, get_int, is_setting_available }
  };
  
@@ -852,7 +1003,7 @@ index abaa6f2..6ded4ad 100644
  PROGMEM static const setting_descr_t setting_descr[] = {
      { Setting_PulseMicroseconds, "Step pulse length in microseconds.\\n"
                                   "Minimum depends on the processor and is typically in the range of 1 - 2.5.\\n\\n"
-@@ -2541,6 +2542,7 @@ PROGMEM static const setting_descr_t setting_descr[] = {
+@@ -2541,6 +2553,7 @@ PROGMEM static const setting_descr_t setting_descr[] = {
      { Setting_MotorFaultsInvert, "Invert motor fault inputs" }
  */
  };
@@ -860,7 +1011,7 @@ index abaa6f2..6ded4ad 100644
  
  static setting_details_t global_settings = {
      .is_core = true,
-@@ -2548,8 +2550,13 @@ static setting_details_t global_settings = {
+@@ -2548,8 +2561,13 @@ static setting_details_t global_settings = {
      .n_groups = sizeof(setting_group_detail) / sizeof(setting_group_detail_t),
      .settings = setting_detail,
      .n_settings = sizeof(setting_detail) / sizeof(setting_detail_t),
@@ -874,7 +1025,7 @@ index abaa6f2..6ded4ad 100644
      .save = _settings_write_global
  };
  
-@@ -2629,6 +2636,31 @@ FLASHMEM bool settings_read_startup_line (uint8_t idx, char *line)
+@@ -2629,6 +2647,31 @@ FLASHMEM bool settings_read_startup_line (uint8_t idx, char *line)
  }
  
  // Write selected coordinate data to persistent storage.
@@ -906,7 +1057,7 @@ index abaa6f2..6ded4ad 100644
  FLASHMEM void settings_write_coord_data (coord_system_id_t id, coord_system_data_t *data)
  {
      assert(id <= N_CoordinateSystems);
-@@ -2637,6 +2669,10 @@ FLASHMEM void settings_write_coord_data (coord_system_id_t id, coord_system_data
+@@ -2637,6 +2680,10 @@ FLASHMEM void settings_write_coord_data (coord_system_id_t id, coord_system_data
      protocol_buffer_synchronize();
  #endif
  
@@ -917,7 +1068,7 @@ index abaa6f2..6ded4ad 100644
      if(grbl.on_wco_saved)
          grbl.on_wco_saved(id, data);
  
-@@ -2656,6 +2692,10 @@ FLASHMEM bool settings_read_coord_data (coord_system_id_t id, coord_system_data_
+@@ -2656,6 +2703,10 @@ FLASHMEM bool settings_read_coord_data (coord_system_id_t id, coord_system_data_
          return false;
      }
  
@@ -928,6 +1079,116 @@ index abaa6f2..6ded4ad 100644
      return true;
  }
  
+@@ -3575,14 +3626,10 @@ FLASHMEM void settings_init (void)
+ #endif
+ 
+     mask = 0b00011 | (hal.probe.select ? ((hal.driver_cap.toolsetter << 3) | (hal.driver_cap.probe2 << 4)) : 0);
+-#if 0
+-    if(hal.probe.get_caps) {
+-        if(hal.probe.get_caps(Probe_Default).watchable)
+-            mask |= (1 << 5);
+-    }
+-#else
+-    settings.probe.enable_protection = Off;
+-#endif
++    if(is_probe_protection_available())
++        mask |= (1 << 5);
++    else
++        settings.probe.enable_protection = Off;
+     setting_remove_elements(Setting_ProbingFlags, mask, true);
+ 
+     if(!settings.flags.settings_downgrade && settings.version.build != (GRBL_BUILD - 20000000UL)) {
+diff --git a/strutils.c b/strutils.c
+index 7fc24d7..ea810d1 100644
+--- a/strutils.c
++++ b/strutils.c
+@@ -285,12 +285,47 @@ FLASHMEM bool strtotime (char *s, struct tm *time)
+     return idx >= 5;
+ }
+ 
++static char *append_2digits (char *buf, int value)
++{
++    *buf++ = '0' + (char)((value / 10) % 10);
++    *buf++ = '0' + (char)(value % 10);
++
++    return buf;
++}
++
++static char *append_4digits (char *buf, int value)
++{
++    *buf++ = '0' + (char)((value / 1000) % 10);
++    *buf++ = '0' + (char)((value / 100) % 10);
++    *buf++ = '0' + (char)((value / 10) % 10);
++    *buf++ = '0' + (char)(value % 10);
++
++    return buf;
++}
++
+ FLASHMEM char *strtoisodt (struct tm *dt)
+ {
+     static char buf[21];
+ 
+-    if(dt == NULL || snprintf(buf, sizeof(buf), "%04i-%02i-%02iT%02i:%02i:%02i", dt->tm_year < 1000 ? dt->tm_year + 1900 : dt->tm_year, dt->tm_mon + 1, dt->tm_mday, dt->tm_hour, dt->tm_min, dt->tm_sec) > sizeof(buf))
++    if(dt == NULL)
+         *buf = '\0';
++    else {
++        char *out = buf;
++        int year = dt->tm_year < 1000 ? dt->tm_year + 1900 : dt->tm_year;
++
++        out = append_4digits(out, year);
++        *out++ = '-';
++        out = append_2digits(out, dt->tm_mon + 1);
++        *out++ = '-';
++        out = append_2digits(out, dt->tm_mday);
++        *out++ = 'T';
++        out = append_2digits(out, dt->tm_hour);
++        *out++ = ':';
++        out = append_2digits(out, dt->tm_min);
++        *out++ = ':';
++        out = append_2digits(out, dt->tm_sec);
++        *out = '\0';
++    }
+ 
+     return buf;
+ }
+@@ -323,17 +358,30 @@ FLASHMEM char *strtointernetdt (struct tm *dt)
+     };
+ 
+     static char buf[31];
++    char *out = buf;
+ 
+-#ifdef __MSP432E401Y__
+-    return "Thu, 01 Jan 1970 00:00:00 GMT"; // snprintf below crashes the MCU!
+-#else
+-
+-    if(dt == NULL || snprintf(buf, sizeof(buf), "%s, %02d %s %04d %02d:%02d:%02d GMT", day_table[dt->tm_wday], dt->tm_mday, month_table[dt->tm_mon], dt->tm_year < 1000 ? dt->tm_year + 1900 : dt->tm_year, dt->tm_hour, dt->tm_min, dt->tm_sec) > sizeof(buf))
++    if(dt == NULL || dt->tm_wday < 0 || dt->tm_wday > 6 || dt->tm_mon < 0 || dt->tm_mon > 11)
+         return "Thu, 01 Jan 1970 00:00:00 GMT";
+ 
+-    return buf;
++    strcpy(out, day_table[dt->tm_wday]);
++    out += 3;
++    *out++ = ',';
++    *out++ = ' ';
++    out = append_2digits(out, dt->tm_mday);
++    *out++ = ' ';
++    strcpy(out, month_table[dt->tm_mon]);
++    out += 3;
++    *out++ = ' ';
++    out = append_4digits(out, dt->tm_year < 1000 ? dt->tm_year + 1900 : dt->tm_year);
++    *out++ = ' ';
++    out = append_2digits(out, dt->tm_hour);
++    *out++ = ':';
++    out = append_2digits(out, dt->tm_min);
++    *out++ = ':';
++    out = append_2digits(out, dt->tm_sec);
++    strcpy(out, " GMT");
+ 
+-#endif
++    return buf;
+ }
+ 
+ FLASHMEM char *btoa (uint64_t bytes)
 diff --git a/system.c b/system.c
 index a9d3580..e6625ba 100644
 --- a/system.c

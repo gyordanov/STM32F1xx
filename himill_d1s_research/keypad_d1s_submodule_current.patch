@@ -1,8 +1,19 @@
 diff --git a/macros.c b/macros.c
-index 9d32141..99a71b7 100644
+index 9d32141..4279585 100644
 --- a/macros.c
 +++ b/macros.c
-@@ -476,6 +476,7 @@ PROGMEM static const setting_detail_t macro_settings[] = {
+@@ -255,7 +255,9 @@ static status_code_t trap_status_messages (status_code_t status_code)
+     else if(status_code != Status_OK) {
+ 
+         char msg[30];
+-        sprintf(msg, "error %d in macro", (uint8_t)status_code);
++        strcpy(msg, "error ");
++        strcat(msg, uitoa((uint8_t)status_code));
++        strcat(msg, " in macro");
+         report_message(msg, Message_Warning);
+ 
+         if(grbl.report.status_message == trap_status_messages && (grbl.report.status_message = status_message))
+@@ -476,6 +478,7 @@ PROGMEM static const setting_detail_t macro_settings[] = {
  #endif
  };
  
@@ -10,7 +21,7 @@ index 9d32141..99a71b7 100644
  PROGMEM static const setting_descr_t macro_settings_descr[] = {
      { Setting_MacroBase, "Macro content, separate blocks (lines) with the vertical bar character |." },
  #if MACROS_ENABLE & 0x01
-@@ -483,6 +484,7 @@ PROGMEM static const setting_descr_t macro_settings_descr[] = {
+@@ -483,6 +486,7 @@ PROGMEM static const setting_descr_t macro_settings_descr[] = {
      { Setting_ButtonActionBase, "Action to take when the pin is triggered."  },
  #endif
  };
@@ -18,7 +29,7 @@ index 9d32141..99a71b7 100644
  
  // Write settings to non volatile storage (NVS).
  static void macro_settings_save (void)
-@@ -717,8 +719,13 @@ FLASHMEM void macros_init (void)
+@@ -717,8 +721,13 @@ FLASHMEM void macros_init (void)
          .n_groups = sizeof(macro_groups) / sizeof(setting_group_detail_t),
          .settings = macro_settings,
          .n_settings = sizeof(macro_settings) / sizeof(setting_detail_t),

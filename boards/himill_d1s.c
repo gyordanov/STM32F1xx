@@ -24,6 +24,7 @@
 #include "grbl/stream.h"
 #include "grbl/protocol.h"
 #include "grbl/motion_control.h"
+#include "grbl/spindle_control.h"
 #include "grbl/state_machine.h"
 #include "grbl/nvs_buffer.h"
 #include "grbl/system.h"
@@ -60,7 +61,9 @@ extern uint32_t diskio_d1s_diagnostics (void);
 #define HIMILL_BOOTFLAG_ADDR   ((volatile uint32_t *)0x2000BFF0UL)
 #define HIMILL_BOOTFLAG_MAGIC  0xFA0505F5UL
 #define HIMILL_D1S_PLUGIN_NAME    "HIMILL_D1S"
-#define HIMILL_D1S_PLUGIN_VERSION "0.10"
+#define HIMILL_D1S_PLUGIN_VERSION "0.11"
+#define D1S_PROBE_PROTECT_POLL_MS 10U
+#define D1S_PROBE_PROTECT_SAMPLES 2U
 
 // STM32F103's factory-burned ROM bootloader (System Memory region).
 // Speaks standard USB DFU → dfu-util works out of the box on any OS.
@@ -80,6 +83,8 @@ static on_stream_changed_ptr   on_stream_changed;
 static on_report_handlers_init_ptr on_report_handlers_init;
 static on_realtime_report_ptr  on_realtime_report;
 static status_message_ptr      on_status_message;
+static uint32_t d1s_probe_protect_last_ms = 0;
+static uint8_t d1s_probe_protect_samples = 0;
 
 extern void *_sbrk (int incr);
 
@@ -1251,6 +1256,53 @@ static void himill_sd_lock_poll (void)
 }
 #endif
 
+static void himill_probe_protection_poll (sys_state_t state)
+{
+    if(!settings.probe.enable_protection || !hal.get_elapsed_ticks || !hal.probe.is_triggered ||
+        !hal.control.interrupt_callback || sys.probing_state != Probing_Off ||
+        gc_state.tool_change || !(state & (STATE_CYCLE|STATE_JOG))
+#if FS_ENABLE & FS_SDCARD
+        || himill_sd_job_active()
+#endif
+    ) {
+        d1s_probe_protect_samples = 0;
+        return;
+    }
+
+    uint32_t now = hal.get_elapsed_ticks();
+    if((now - d1s_probe_protect_last_ms) < D1S_PROBE_PROTECT_POLL_MS)
+        return;
+
+    d1s_probe_protect_last_ms = now;
+
+    // 3D probe (PB2): guarded only while the spindle is off — a spinning tool
+    // is expected to be in contact with stock. Toolsetter (PA1): guarded
+    // regardless of spindle state — a drag knife (or any tool) driven into the
+    // bed toolsetter outside a toolchange is always a crash. The legitimate
+    // toolsetter tap during an M6 touch-off runs as a probing cycle ($341=3
+    // semi-auto, toolsetter_auto_select), so it is already excluded above via
+    // sys.probing_state. is_triggered() reads each probe by id (independent of
+    // the selected probe), so the toolsetter is seen even when not selected.
+    bool triggered = (!spindle_is_on() && hal.probe.is_triggered(Probe_Default))
+                     || (hal.driver_cap.toolsetter && hal.probe.is_triggered(Probe_Toolsetter));
+
+    if(!triggered) {
+        d1s_probe_protect_samples = 0;
+        return;
+    }
+
+    if(++d1s_probe_protect_samples < D1S_PROBE_PROTECT_SAMPLES)
+        return;
+
+    d1s_probe_protect_samples = 0;
+
+    control_signals_t signals = {0};
+    if(hal.control.get_state)
+        signals.mask = hal.control.get_state().mask;
+    signals.probe_triggered = On;
+    hal.control.interrupt_callback(signals);
+}
+
 static void esp_tunnel_reset_response_state (void)
 {
     esp_tunnel_json_seen = false;
@@ -1383,6 +1435,8 @@ static void himill_poll_buttons (sys_state_t state)
 #if FS_ENABLE & FS_SDCARD
     himill_sd_lock_poll();
 #endif
+
+    himill_probe_protection_poll(state);
 
     if (on_execute_realtime)
         on_execute_realtime(state);
@@ -2504,12 +2558,11 @@ static bool himill_profile_repair (void)
     }
 
     if (!settings.probe.soft_limited || !settings.probe.toolsetter_auto_select ||
-        settings.probe.allow_feed_override || settings.probe.probe2_auto_select || settings.probe.enable_protection) {
+        settings.probe.allow_feed_override || settings.probe.probe2_auto_select) {
         settings.probe.allow_feed_override = Off;
         settings.probe.soft_limited = On;
         settings.probe.toolsetter_auto_select = On;
         settings.probe.probe2_auto_select = Off;
-        settings.probe.enable_protection = Off;
         if (hal.probe.configure)
             hal.probe.configure(false, false);
         changed = true;
