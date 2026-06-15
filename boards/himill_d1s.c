@@ -85,6 +85,10 @@ static on_realtime_report_ptr  on_realtime_report;
 static status_message_ptr      on_status_message;
 static uint32_t d1s_probe_protect_last_ms = 0;
 static uint8_t d1s_probe_protect_samples = 0;
+// Protection arms only after the probe pin has read clear since the last probe
+// cycle, so a G38 that stops in contact isn't misread as a crash. Default off
+// is fail-safe: it self-arms on the first clear reading during normal motion.
+static bool d1s_probe_protect_armed = false;
 
 extern void *_sbrk (int incr);
 
@@ -1258,8 +1262,23 @@ static void himill_sd_lock_poll (void)
 
 static void himill_probe_protection_poll (sys_state_t state)
 {
-    if(!settings.probe.enable_protection || !hal.get_elapsed_ticks || !hal.probe.is_triggered ||
-        !hal.control.interrupt_callback || sys.probing_state != Probing_Off ||
+    if(!settings.probe.enable_protection || !hal.get_elapsed_ticks ||
+        !hal.probe.is_triggered || !hal.control.interrupt_callback) {
+        d1s_probe_protect_samples = 0;
+        return;
+    }
+
+    // Disarm protection while a probe cycle is active. A G38 that stops AT
+    // contact leaves the probe still triggered after sys.probing_state has
+    // returned to Off (the machine is briefly still in CYCLE for the sender's
+    // back-off rapid before the pin clears). Reading that legitimate post-probe
+    // contact as a crash is what false-fired Alarm 13 mid-probe. Protection
+    // re-arms only once the pin reads clear again (below), so back-off speed
+    // and decel timing no longer matter.
+    if(sys.probing_state != Probing_Off)
+        d1s_probe_protect_armed = false;
+
+    if(sys.probing_state != Probing_Off ||
         gc_state.tool_change || !(state & (STATE_CYCLE|STATE_JOG))
 #if FS_ENABLE & FS_SDCARD
         || himill_sd_job_active()
@@ -1287,6 +1306,14 @@ static void himill_probe_protection_poll (sys_state_t state)
                      || (hal.driver_cap.toolsetter && hal.probe.is_triggered(Probe_Toolsetter));
 
     if(!triggered) {
+        d1s_probe_protect_armed = true;
+        d1s_probe_protect_samples = 0;
+        return;
+    }
+
+    // Triggered but not yet re-armed = the probe is still resting in contact
+    // from the cycle that just finished. Ignore until it reads clear once.
+    if(!d1s_probe_protect_armed) {
         d1s_probe_protect_samples = 0;
         return;
     }
