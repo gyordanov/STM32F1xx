@@ -2376,6 +2376,10 @@ void HAL_IncTick(void)
 #endif
     uwTick += uwTickFreq;
 
+#if SERIAL_DMA_RX
+    serialRealtimePoll();       // drain DMA RX: realtime cmds + line data (1 ms)
+#endif
+
     if(delay.ms && !(--delay.ms) && delay.callback) {
         delay.callback();
         delay.callback = NULL;

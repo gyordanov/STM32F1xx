@@ -35,4 +35,10 @@
 
 void serialRegisterStreams (void);
 
+#if SERIAL_DMA_RX
+// Drains the DMA RX landing buffer: dispatches realtime commands and forwards
+// line data to the software RX ring. Call from the 1 ms HAL tick (HAL_IncTick).
+void serialRealtimePoll (void);
+#endif
+
 /*EOF*/
