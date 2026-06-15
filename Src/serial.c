@@ -360,12 +360,40 @@ void serialRegisterStreams (void) {}; // No serial ports!
 
 #if SERIAL_PORT
 
+#if SERIAL_DMA_RX
+
+#if SERIAL_PORT != 2
+#error "SERIAL_DMA_RX is currently implemented for SERIAL_PORT == 2 (USART2 -> DMA1_Channel6) only"
+#endif
+
+// USART2 RX served by DMA1 Channel 6 (STM32F103). A circular DMA copies every
+// received byte into rxbuf.data with no CPU involvement, so RX survives the CPU
+// stall during a flash erase/program: STM32F1 executes XIP from flash, and a
+// flash program halts instruction fetch, which would otherwise starve the RXNE
+// ISR and drop an incoming byte -> truncated gcode line -> frozen probe. The DMA
+// write position is derived from CNDTR; rxbuf.tail stays the software read
+// pointer; rxbuf.head is unused on this path. Realtime-command scanning moves to
+// serialGetC (the drain) since there is no per-byte RX interrupt. RX_BUFFER_SIZE
+// must be a power of two (it is masked below); the HiMill build sets 512.
+#define UART0_DMA_RX DMA1_Channel6
+
+static inline uint_fast16_t serialRxHead (void)
+{
+    return (uint_fast16_t)((RX_BUFFER_SIZE - UART0_DMA_RX->CNDTR) & (RX_BUFFER_SIZE - 1));
+}
+
+#endif // SERIAL_DMA_RX
+
 //
 // Returns number of free characters in serial input buffer
 //
 static uint16_t serialRxFree (void)
 {
+#if SERIAL_DMA_RX
+    uint16_t tail = rxbuf.tail, head = serialRxHead();
+#else
     uint16_t tail = rxbuf.tail, head = rxbuf.head;
+#endif
 
     return RX_BUFFER_SIZE - BUFCOUNT(head, tail, RX_BUFFER_SIZE);
 }
@@ -375,7 +403,11 @@ static uint16_t serialRxFree (void)
 //
 static uint16_t serialRxCount (void)
 {
+#if SERIAL_DMA_RX
+    uint32_t tail = rxbuf.tail, head = serialRxHead();
+#else
     uint32_t tail = rxbuf.tail, head = rxbuf.head;
+#endif
 
     return BUFCOUNT(head, tail, RX_BUFFER_SIZE);
 }
@@ -385,7 +417,11 @@ static uint16_t serialRxCount (void)
 //
 void serialRxFlush (void)
 {
+#if SERIAL_DMA_RX
+    rxbuf.tail = serialRxHead();
+#else
     rxbuf.tail = rxbuf.head;
+#endif
 }
 
 //
@@ -393,9 +429,15 @@ void serialRxFlush (void)
 //
 static void serialRxCancel (void)
 {
+#if SERIAL_DMA_RX
+    // DMA owns the buffer (can't inject CAN ahead of the DMA write pointer);
+    // discard pending input. Soft reset resets the parser anyway.
+    rxbuf.tail = serialRxHead();
+#else
     rxbuf.data[rxbuf.head] = ASCII_CAN;
     rxbuf.tail = rxbuf.head;
     rxbuf.head = BUFNEXT(rxbuf.head, rxbuf);
+#endif
 }
 
 //
@@ -464,6 +506,23 @@ static uint16_t serialTxCount (void)
 //
 static int32_t serialGetC (void)
 {
+#if SERIAL_DMA_RX
+    // No per-byte RX interrupt with DMA, so the realtime-command scan happens
+    // here on the drain. grbl polls this read continuously in its main loop, so
+    // realtime latency (?, !, ~, 0x18) matches the ISR path in normal operation;
+    // during a flash stall the main loop is frozen either way.
+    uint_fast16_t tail = rxbuf.tail;
+
+    while(tail != serialRxHead()) {
+        uint8_t data = rxbuf.data[tail];
+        tail = BUFNEXT(tail, rxbuf);
+        rxbuf.tail = tail;
+        if(!enqueue_realtime_command(data))     // strip realtime; return line data only
+            return (int32_t)data;
+    }
+
+    return -1; // no (line) data available
+#else
     uint_fast16_t tail = rxbuf.tail;            // Get buffer pointer
 
     if(tail == rxbuf.head)
@@ -473,6 +532,7 @@ static int32_t serialGetC (void)
     rxbuf.tail = BUFNEXT(tail, rxbuf);          // and update pointer
 
     return data;
+#endif
 }
 
 static bool serialSuspendInput (bool suspend)
@@ -486,17 +546,35 @@ static bool serialSetBaudRate (uint32_t baud_rate)
 
     UART0->CR1 = USART_CR1_RE|USART_CR1_TE;
     UART0->BRR = UART_BRR_SAMPLING16(UART0_CLK(), baud_rate);
+#if SERIAL_DMA_RX
+    UART0->CR3 |= USART_CR3_DMAR;                    // RX via DMA (channel set up in serialInit)
+    UART0->CR1 |= USART_CR1_UE;                      // no RXNEIE — DMA drains DR
+#else
     UART0->CR1 |= (USART_CR1_UE|USART_CR1_RXNEIE);
+#endif
 
     return true;
 }
 
 static bool serialDisable (bool disable)
 {
+#if SERIAL_DMA_RX
+    if(disable) {
+        UART0->CR3 &= ~USART_CR3_DMAR;
+        UART0_DMA_RX->CCR &= ~DMA_CCR_EN;
+    } else {                                         // restart DMA RX fresh
+        UART0_DMA_RX->CCR &= ~DMA_CCR_EN;
+        UART0_DMA_RX->CNDTR = RX_BUFFER_SIZE;
+        UART0_DMA_RX->CCR |= DMA_CCR_EN;
+        rxbuf.tail = 0;
+        UART0->CR3 |= USART_CR3_DMAR;
+    }
+#else
     if(disable)
         UART0->CR1 &= ~USART_CR1_RXNEIE;
     else
         UART0->CR1 |= USART_CR1_RXNEIE;
+#endif
 
     return true;
 }
@@ -569,6 +647,20 @@ static const io_stream_t *serialInit (uint32_t baud_rate)
         HAL_NVIC_SetPriority(UART0_IRQ, 1, 0);
         HAL_NVIC_EnableIRQ(UART0_IRQ);
 
+#if SERIAL_DMA_RX
+        // Circular DMA1 Ch6 (USART2_RX) -> rxbuf.data. periph->mem, 8-bit,
+        // memory-increment, circular, medium priority, no DMA interrupts (we
+        // poll CNDTR). Configured once; serialSetBaudRate enables USART CR3 DMAR.
+        __HAL_RCC_DMA1_CLK_ENABLE();
+        UART0_DMA_RX->CCR = 0;                           // disable while configuring
+        UART0_DMA_RX->CPAR = (uint32_t)&UART0->DR;       // source: USART data register
+        UART0_DMA_RX->CMAR = (uint32_t)rxbuf.data;       // dest: RX ring buffer
+        UART0_DMA_RX->CNDTR = RX_BUFFER_SIZE;
+        UART0_DMA_RX->CCR = DMA_CCR_MINC | DMA_CCR_CIRC | DMA_CCR_PL_0;
+        UART0_DMA_RX->CCR |= DMA_CCR_EN;                 // start
+        rxbuf.tail = 0;
+#endif
+
         serial[0].flags.init_ok = On;
     }
 
@@ -579,6 +671,7 @@ static const io_stream_t *serialInit (uint32_t baud_rate)
 
 void UART0_IRQHandler (void)
 {
+#if !SERIAL_DMA_RX
     if(UART0->SR & USART_SR_RXNE) {
         uint8_t data = UART0->DR;
         if(!enqueue_realtime_command(data)) {                   // Check and strip realtime commands...
@@ -591,6 +684,7 @@ void UART0_IRQHandler (void)
             }
         }
     }
+#endif // !SERIAL_DMA_RX
 
     if((UART0->SR & USART_SR_TXE) && (UART0->CR1 & USART_CR1_TXEIE)) {
         uint_fast16_t tail = txbuf.tail;            // Get buffer pointer
