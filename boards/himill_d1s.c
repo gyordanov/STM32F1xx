@@ -61,7 +61,7 @@ extern uint32_t diskio_d1s_diagnostics (void);
 #define HIMILL_BOOTFLAG_ADDR   ((volatile uint32_t *)0x2000BFF0UL)
 #define HIMILL_BOOTFLAG_MAGIC  0xFA0505F5UL
 #define HIMILL_D1S_PLUGIN_NAME    "HIMILL_D1S"
-#define HIMILL_D1S_PLUGIN_VERSION "0.11"
+#define HIMILL_D1S_PLUGIN_VERSION "0.12"
 #define D1S_PROBE_PROTECT_POLL_MS 10U
 #define D1S_PROBE_PROTECT_SAMPLES 2U
 
@@ -697,6 +697,43 @@ static const io_stream_t *mux_suspended_stream = NULL;
 static enqueue_realtime_command_ptr mux_rt_handler = protocol_enqueue_realtime_command;
 static const io_stream_t *mux_rt_owner = NULL;
 static bool mux_rt_owner_locked = false;
+
+// --- Single-active-controller arbitration (dual-connect lock) -------------
+// NEWEST-WINS, matching grblHAL's stream_select on FlexiHAL: the most recently
+// CONNECTED transport becomes the sole controller; the other becomes a
+// read-only observer. Observer line input is DROPPED (not buffered/replayed —
+// FlexiHAL replays the dormant stream's buffered input on hand-back, which is
+// surprising; we discard instead), command responses go only to the controller,
+// but mux_write_all status broadcasts still reach the observer (live DRO).
+// Realtime (?/!/reset/overrides) is never gated here — it is stripped in the
+// enqueue handler before mux_read.
+//
+// Claims:
+//   - USB takes control on its FIRST DATA LINE while DTR is asserted (in
+//     mux_line_gate). Deliberately NOT the bare DTR rising edge: the USB CDC
+//     peripheral emits phantom DTR events, and any host-side port scan / probe
+//     (device-list refresh, udev, ModemManager) momentarily opens the port and
+//     asserts DTR with no data — a DTR-edge takeover let that steal control
+//     from an active network session. Requiring a real data line ignores those.
+//   - USB releases on the DTR FALLING edge (mux_update_usb_presence, polled in
+//     himill_poll_buttons): if USB held control, hand back to NET if present.
+//   - NET present = ESP3D's [DN:U]/[DN:D] owner signals (the network-side
+//     equivalent of USB's DTR), parsed in himill_user_command. [DN:U] -> NET
+//     takes control; [DN:D] -> hand back to USB if DTR still asserted, else
+//     NONE. NET DATA lines never claim (an observer's net lines stay dropped).
+// [BOOT] from USB always bypasses the lock (bracket-line exception in
+// mux_line_gate) so flashing is never locked out. Graceful: until ESP3D emits
+// [DN:*], NET never claims and behaviour matches the pre-lock mux.
+typedef enum {
+    MUX_CTRL_NONE = 0,
+    MUX_CTRL_USB,
+    MUX_CTRL_NET
+} mux_controller_t;
+
+static mux_controller_t mux_controller = MUX_CTRL_NONE;
+static bool d1s_net_present = false;       // NET present (ESP3D [DN:U] seen, no [DN:D] yet)
+static bool mux_usb_was_connected = false; // previous USB DTR state, for edge detection
+static bool mux_drop_line = false;         // dropping the current observer line in mux_read
 static int32_t esp_tunnel_pending = SERIAL_NO_DATA;
 static bool esp_tunnel_json_seen = false;
 static uint8_t esp_tunnel_json_depth = 0;
@@ -764,6 +801,27 @@ static const io_stream_t *mux_command_or_active (void)
 
 static const io_stream_t *mux_write_target (void)
 {
+    // Under the single-controller lock, command responses (ok/error/reports)
+    // go ONLY to the controller — the observer must not receive them (that is
+    // what makes its sender show "another sender in control"). Status pushes
+    // still reach the observer via mux_write_all. When unowned, fall back to the
+    // legacy last-sender/active behaviour (no regression for single-client use).
+    switch (mux_controller) {
+
+        case MUX_CTRL_USB:
+            if (mux_stream_connected(mux_usb))
+                return mux_usb;
+            break;
+
+        case MUX_CTRL_NET:
+            if (mux_stream_connected(mux_uart))
+                return mux_uart;
+            break;
+
+        default:
+            break;
+    }
+
     return mux_stream_connected(mux_reply_owner) ? mux_reply_owner : mux_active();
 }
 
@@ -826,6 +884,64 @@ static bool mux_is_connected (void)
     return mux_stream_connected(mux_uart) || mux_stream_connected(mux_usb);
 }
 
+// Poll USB DTR for a connect/disconnect edge and apply newest-wins: a USB
+// connect (DTR rising) takes control; a USB disconnect (DTR falling) hands
+// control back to NET if it is still present, else NONE. Called every realtime
+// tick from himill_poll_buttons so a USB connect takes over promptly even while
+// USB is silent. is_connected() carries a 15 ms DTR debounce, so edges here are
+// already debounced.
+static void mux_update_usb_presence (void)
+{
+    bool now = mux_stream_connected(mux_usb);
+
+    if (now == mux_usb_was_connected)
+        return;
+
+    // Only the DISCONNECT (DTR falling) edge acts here: if USB held control,
+    // hand back to NET if present, else NONE. USB TAKEOVER is line-based (see
+    // mux_line_gate), NOT the DTR rising edge — a phantom / OS-probe / port-scan
+    // DTR assert with no data must NOT steal control from an active network
+    // session.
+    if (!now && mux_controller == MUX_CTRL_USB)
+        mux_controller = d1s_net_present ? MUX_CTRL_NET : MUX_CTRL_NONE;
+
+    mux_usb_was_connected = now;
+}
+
+// Single-controller line gate. Returns true if byte c from stream s should be
+// delivered to grbl's line parser, false if it must be swallowed (observer line
+// dropped — NOT buffered). Claims are decided on connect edges elsewhere
+// (mux_update_usb_presence for USB, [DN:*] for NET); this only enforces the
+// drop. Only USB and the ESP3D UART are arbitrated; realtime bytes never reach
+// here. Bracket-command lines ('[') from an observer are NOT dropped, so
+// [BOOT]/[ESP*]/[D1S_*]/[DN:*] still reach their self-gating handlers. MUST be
+// called BEFORE mux_note_rx_byte (it reads the pre-update mux_rx_line_owner to
+// detect a line start).
+static bool mux_line_gate (const io_stream_t *s, int32_t c)
+{
+    mux_controller_t cand = s == mux_usb  ? MUX_CTRL_USB
+                          : s == mux_uart ? MUX_CTRL_NET
+                          : MUX_CTRL_NONE;
+    if (cand == MUX_CTRL_NONE)
+        return true;
+
+    if (mux_rx_line_owner == NULL) {               // first byte of a fresh line
+        // Newest-wins: USB takes control on its first line while DTR is up (we
+        // just read from it). Line-based, NOT the bare DTR edge, so a phantom /
+        // OS-probe / port-scan DTR assert with no data can't steal control. NET
+        // takeover is signalled out-of-band by [DN:U]; NET data lines never
+        // claim, so a net observer's lines stay dropped.
+        if (cand == MUX_CTRL_USB)
+            mux_controller = MUX_CTRL_USB;
+
+        mux_drop_line = mux_controller != MUX_CTRL_NONE   // observer? drop unless
+                     && mux_controller != cand            // it is a bracket cmd
+                     && (uint8_t)c != '[';
+    }
+
+    return !mux_drop_line;
+}
+
 static int32_t mux_read (void)
 {
     for (;;) {
@@ -860,8 +976,13 @@ static int32_t mux_read (void)
                     telnet_iac_state = 1;
                     continue;
                 }
-                mux_note_rx_byte(s, c);
-                return c;
+                {
+                    bool deliver = mux_line_gate(s, c);
+                    mux_note_rx_byte(s, c);
+                    if (deliver)
+                        return c;
+                    continue;
+                }
 
             case 1: // seen IAC
                 if ((uint8_t)c == 0xFF) {
@@ -893,8 +1014,13 @@ static int32_t mux_read (void)
                 continue;
         }
 
-        mux_note_rx_byte(s, c);
-        return c;
+        {
+            bool deliver = mux_line_gate(s, c);
+            mux_note_rx_byte(s, c);
+            if (deliver)
+                return c;
+            continue;
+        }
     }
 }
 
@@ -1391,6 +1517,11 @@ static void esp_tunnel_close (void)
 
 static void himill_poll_buttons (sys_state_t state)
 {
+    // Newest-wins arbitration: catch USB DTR connect/disconnect edges promptly
+    // (even while USB is silent) so connecting a USB client takes control and
+    // unplugging hands control back to the network side.
+    mux_update_usb_presence();
+
 #if MPG_ENABLE == 2 && !defined(HIMILL_SKIP_MUX)
     // Re-install our filter as UART4's rx_handler. stream_mpg_enable swaps
     // it for protocol_enqueue_realtime_command on every transition (grbl/
@@ -2326,6 +2457,32 @@ static status_code_t himill_user_command (char *line)
 
         return himill_sd_private_command_handled();
     }
+
+    // Network owner connect/disconnect from ESP3D's WS arbitration — the
+    // network-side equivalent of USB's DTR (newest-wins, dual-connect lock).
+    // Only honour these from the UART (ESP3D) side. Consume silently (no ok echo
+    // — the WS sender never sent this; an echo would desync its char-counter).
+    // NOTE: the silent-consume reuses the SD suppress helper, so these live
+    // inside the SD build guard; D1S always ships with SD. Without SD, NET never
+    // claims (graceful — USB-only behaviour).
+    if (strcmp(line, "[DN:U]") == 0) {                 // NET connect -> takeover
+        if (mux_last_rx_owner == mux_uart) {
+            d1s_net_present = true;
+            mux_controller = MUX_CTRL_NET;
+        }
+        return himill_sd_private_command_handled();
+    }
+
+    if (strcmp(line, "[DN:D]") == 0) {                 // NET disconnect
+        if (mux_last_rx_owner == mux_uart) {
+            d1s_net_present = false;
+            if (mux_controller == MUX_CTRL_NET)        // hand back to USB if present
+                mux_controller = mux_stream_connected(mux_usb) ? MUX_CTRL_USB
+                                                               : MUX_CTRL_NONE;
+        }
+        return himill_sd_private_command_handled();
+    }
+
 #endif
 
     if (strncmp(line, "[ESP", 4) == 0) {
