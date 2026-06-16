@@ -708,6 +708,17 @@ static bool esp_tunnel_json_escape = false;
 // set so it doesn't race on the same RX buffer.
 static volatile uint32_t  esp_tunnel_until_ms = 0;
 
+// Guards the [ESP*] response drainer against re-entrancy: mux_usb->write_char
+// blocks when USB CDC TX is full and spins on hal.stream_blocking_callback ->
+// protocol_execute_realtime -> himill_poll_buttons, re-entering the drainer.
+// A nested drain writes the next rxbuf bytes ahead of the outer pending byte
+// and reorders ESP3D's reply (garbled JSON on >512 B replies — the DMA-RX
+// build batches rxbuf fills, so a re-entrant drain always finds bytes to
+// scramble; the per-byte ISR build trickled, masking it). True while the
+// drainer runs so the re-entrant call skips and the outer write completes in
+// order. USB TX still drains via the host/USB ISR, so the outer write unblocks.
+static bool esp_tunnel_draining = false;
+
 // Pick active based on DTR. USB if host has port open, otherwise UART.
 static const io_stream_t *mux_active (void)
 {
@@ -1435,10 +1446,15 @@ static void himill_poll_buttons (sys_state_t state)
     // TX so the user sees ESP3D's JSON answer on the USB serial they sent
     // the command from. Bypasses mux_active so it works while DTR-mux is
     // pointed at USB.
-    if (esp_tunnel_until_ms != 0) {
+    if (esp_tunnel_until_ms != 0 && !esp_tunnel_draining) {
         if ((int32_t)(hal.get_elapsed_ticks() - esp_tunnel_until_ms) >= 0) {
             esp_tunnel_close();
         } else if (mux_uart && mux_uart->read && mux_usb && mux_usb->write_char) {
+            // Re-entrancy guard (see esp_tunnel_draining): write_char blocking on
+            // a full USB TX re-enters himill_poll_buttons via the realtime
+            // callback; a nested drain reorders the reply. The outer call owns
+            // the drain; re-entrant calls skip (outer write still completes).
+            esp_tunnel_draining = true;
             for (uint16_t i = 0; i < 64; i++) {  // bounded per-tick drain
                 int32_t c = esp_tunnel_pending;
                 if (c == SERIAL_NO_DATA)
@@ -1456,6 +1472,7 @@ static void himill_poll_buttons (sys_state_t state)
                     break;
                 }
             }
+            esp_tunnel_draining = false;
         }
     }
 
