@@ -926,16 +926,16 @@ static void mux_write_all (const char *str)
     if (mux_stream_connected(mux_usb) && mux_usb != mux_uart && mux_usb->write)
         mux_usb->write(str);
 
-    // When MPG is engaged, the pendant requests status with `?`. That hits
-    // protocol_enqueue_realtime_command, which schedules a "regular" report
-    // routed through hal.stream.write_all (= this function). In standard
-    // grblHAL stream_write_all iterates the connection list — which includes
-    // the MPG stream — so the pendant gets the report on UART4. mux_write_all
-    // doesn't iterate that list, so without this branch the pendant never
-    // sees `MPG:1`, decides MPG didn't engage, and re-sends 0x8B. After our
-    // 500 ms debounce window the next 0x8B passes through and toggles MPG
-    // off → ~0.5 Hz toggle loop (the alternating MPG:1/MPG:0 in /tmp/mpg6.txt).
-    if (sys.mpg_mode && mpg_uart_stream && mpg_uart_stream->write)
+    // Broadcast periodic/auto status to the MPG pendant (UART4) whenever it's
+    // present — NOT only when MPG is engaged. Stock grblHAL's stream_write_all
+    // iterates all connected streams (incl. the MPG), which is how a pendant
+    // shows live DRO even while the sender is driving. mux_write_all doesn't
+    // iterate that list; gating this branch on sys.mpg_mode left the D1S pendant
+    // DRO stuck at 0 until MPG was toggled active, and not tracking sender jogs.
+    // Broadcasting always is a superset of the old engage-only behaviour and
+    // does NOT reintroduce the ~0.5 Hz 0x8B toggle loop — that loop was caused
+    // by the pendant MISSING the MPG:1 report (too few reports), not too many.
+    if (mpg_uart_stream && mpg_uart_stream->write)
         mpg_uart_stream->write(str);
 }
 
