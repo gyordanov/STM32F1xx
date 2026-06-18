@@ -708,22 +708,27 @@ static bool mux_rt_owner_locked = false;
 // Realtime (?/!/reset/overrides) is never gated here — it is stripped in the
 // enqueue handler before mux_read.
 //
-// Claims:
-//   - USB takes control on its FIRST DATA LINE while DTR is asserted (in
-//     mux_line_gate). Deliberately NOT the bare DTR rising edge: the USB CDC
-//     peripheral emits phantom DTR events, and any host-side port scan / probe
-//     (device-list refresh, udev, ModemManager) momentarily opens the port and
-//     asserts DTR with no data — a DTR-edge takeover let that steal control
-//     from an active network session. Requiring a real data line ignores those.
-//   - USB releases on the DTR FALLING edge (mux_update_usb_presence, polled in
-//     himill_poll_buttons): if USB held control, hand back to NET if present.
-//   - NET present = ESP3D's [DN:U]/[DN:D] owner signals (the network-side
-//     equivalent of USB's DTR), parsed in himill_user_command. [DN:U] -> NET
-//     takes control; [DN:D] -> hand back to USB if DTR still asserted, else
-//     NONE. NET DATA lines never claim (an observer's net lines stay dropped).
-// [BOOT] from USB always bypasses the lock (bracket-line exception in
-// mux_line_gate) so flashing is never locked out. Graceful: until ESP3D emits
-// [DN:*], NET never claims and behaviour matches the pre-lock mux.
+// Claims fire on CONNECT EDGES, treating the two transports symmetrically:
+//   - USB present  = DTR asserted (is_connected). Rising edge -> USB takes
+//     control; falling edge -> hand back to NET if still present, else NONE.
+//   - NET present  = ESP3D's [DN:U]/[DN:D] owner signals (the network-side
+//     equivalent of USB's DTR). [DN:U] -> NET takes control; [DN:D] -> hand
+//     back to USB if DTR still asserted, else NONE.
+// USB edges are polled in himill_poll_buttons (mux_update_usb_presence); NET
+// edges are handled where [DN:*] is parsed (himill_user_command). [BOOT] from
+// USB always bypasses the lock (bracket-line exception in mux_line_gate) so
+// flashing is never locked out. Graceful: until ESP3D emits [DN:*], NET never
+// claims and behaviour matches the pre-lock mux.
+//
+// KNOWN LIMITATION (deferred 2026-06-16): the DTR-rising-edge takeover means a
+// transient/phantom USB DTR assert (a host-side port scan/probe while a network
+// session is active) can briefly steal control. A line-based USB claim (claim
+// on the first USB DATA LINE instead of the DTR edge) was tried to fix that, but
+// it HW-reproducibly made USB/desktop streaming choppy — steady-state mux_controller
+// ends up identical, so the mechanism is not understood (both the steal and the
+// choppiness smell like USB-DTR flapping under load). Reverted to this smooth
+// rising-edge behaviour; revisit only with live mux_controller instrumentation
+// (NGC-off debug build), not another blind change.
 typedef enum {
     MUX_CTRL_NONE = 0,
     MUX_CTRL_USB,
@@ -734,6 +739,7 @@ static mux_controller_t mux_controller = MUX_CTRL_NONE;
 static bool d1s_net_present = false;       // NET present (ESP3D [DN:U] seen, no [DN:D] yet)
 static bool mux_usb_was_connected = false; // previous USB DTR state, for edge detection
 static bool mux_drop_line = false;         // dropping the current observer line in mux_read
+static uint8_t mux_dtr_edges = 0;          // USB DTR edges seen (wraps 0-255); |MX: telemetry — rapid churn = phantom DTR flapping
 static int32_t esp_tunnel_pending = SERIAL_NO_DATA;
 static bool esp_tunnel_json_seen = false;
 static uint8_t esp_tunnel_json_depth = 0;
@@ -890,6 +896,19 @@ static bool mux_is_connected (void)
 // tick from himill_poll_buttons so a USB connect takes over promptly even while
 // USB is silent. is_connected() carries a 15 ms DTR debounce, so edges here are
 // already debounced.
+// Newest-wins takeover is allowed only when the machine is IDLE or in ALARM —
+// never mid-operation. A second client connecting while a job runs (CYCLE), is
+// paused (HOLD), jogging or homing does NOT steal control; it becomes a
+// read-only observer and its sender sees the non-idle status and backs off
+// (restores the pre-arbitration behaviour). ALARM is takeover-able so a fresh
+// client can recover ($X). Gates only NEW claims — the existing controller
+// keeps control across all states once claimed.
+static bool mux_takeover_allowed (void)
+{
+    sys_state_t s = state_get();
+    return s == STATE_IDLE || s == STATE_ALARM;
+}
+
 static void mux_update_usb_presence (void)
 {
     bool now = mux_stream_connected(mux_usb);
@@ -897,12 +916,12 @@ static void mux_update_usb_presence (void)
     if (now == mux_usb_was_connected)
         return;
 
-    // Only the DISCONNECT (DTR falling) edge acts here: if USB held control,
-    // hand back to NET if present, else NONE. USB TAKEOVER is line-based (see
-    // mux_line_gate), NOT the DTR rising edge — a phantom / OS-probe / port-scan
-    // DTR assert with no data must NOT steal control from an active network
-    // session.
-    if (!now && mux_controller == MUX_CTRL_USB)
+    mux_dtr_edges++;                               // telemetry: a real DTR transition
+
+    if (now) {                                     // USB connect edge
+        if (mux_takeover_allowed())                // newest-wins, but never steal a running job
+            mux_controller = MUX_CTRL_USB;
+    } else if (mux_controller == MUX_CTRL_USB)     // USB disconnect edge
         mux_controller = d1s_net_present ? MUX_CTRL_NET : MUX_CTRL_NONE;
 
     mux_usb_was_connected = now;
@@ -925,19 +944,10 @@ static bool mux_line_gate (const io_stream_t *s, int32_t c)
     if (cand == MUX_CTRL_NONE)
         return true;
 
-    if (mux_rx_line_owner == NULL) {               // first byte of a fresh line
-        // Newest-wins: USB takes control on its first line while DTR is up (we
-        // just read from it). Line-based, NOT the bare DTR edge, so a phantom /
-        // OS-probe / port-scan DTR assert with no data can't steal control. NET
-        // takeover is signalled out-of-band by [DN:U]; NET data lines never
-        // claim, so a net observer's lines stay dropped.
-        if (cand == MUX_CTRL_USB)
-            mux_controller = MUX_CTRL_USB;
-
+    if (mux_rx_line_owner == NULL)                 // first byte of a fresh line:
         mux_drop_line = mux_controller != MUX_CTRL_NONE   // observer? drop unless
                      && mux_controller != cand            // it is a bracket cmd
                      && (uint8_t)c != '[';
-    }
 
     return !mux_drop_line;
 }
@@ -2353,6 +2363,17 @@ static void himill_realtime_report (stream_write_ptr stream_write, report_tracki
     } else if(sdcard_is_released_to_external())
         stream_write("|SDB:ESP3D");
 
+    // Mux arbitration telemetry: |MX:<state>,<dtr-edges>
+    //   state bits: 0-1 controller (0 NONE / 1 USB / 2 NET),
+    //               2 USB present (DTR), 3 NET present ([DN:U] seen).
+    //   dtr-edges: USB DTR transitions seen (wraps) — rapid churn = phantom flap.
+    stream_write("|MX:");
+    stream_write(uitoa((uint32_t)mux_controller
+                       | (mux_stream_connected(mux_usb) ? 0x04u : 0u)
+                       | (d1s_net_present ? 0x08u : 0u)));
+    stream_write(",");
+    stream_write(uitoa(mux_dtr_edges));
+
     if(on_realtime_report)
         on_realtime_report(stream_write, report);
 }
@@ -2465,10 +2486,11 @@ static status_code_t himill_user_command (char *line)
     // NOTE: the silent-consume reuses the SD suppress helper, so these live
     // inside the SD build guard; D1S always ships with SD. Without SD, NET never
     // claims (graceful — USB-only behaviour).
-    if (strcmp(line, "[DN:U]") == 0) {                 // NET connect -> takeover
+    if (strcmp(line, "[DN:U]") == 0) {                 // NET connect
         if (mux_last_rx_owner == mux_uart) {
             d1s_net_present = true;
-            mux_controller = MUX_CTRL_NET;
+            if (mux_takeover_allowed())                // newest-wins, but never steal a running job
+                mux_controller = MUX_CTRL_NET;
         }
         return himill_sd_private_command_handled();
     }
