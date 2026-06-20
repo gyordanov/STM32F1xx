@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+PATCHES=(
+  "grbl:himill_d1s_research/grbl_d1s_submodule_current.patch"
+  "keypad:himill_d1s_research/keypad_d1s_submodule_current.patch"
+  "sdcard:himill_d1s_research/sdcard_d1s_submodule_current.patch"
+)
+
+usage() {
+  cat <<'EOF'
+Usage: bin/apply-d1s-submodule-patches
+
+Initializes D1S-relevant submodules, then applies the cumulative D1S patch for
+that submodule. Safe to re-run: already-applied patches are skipped.
+
+Only *_d1s_submodule_current.patch files are applied. Ingredient/research patch
+files in himill_d1s_research/ are intentionally ignored.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+cd "$ROOT"
+
+if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
+  echo "error: $ROOT is not a git repo" >&2
+  exit 1
+fi
+
+echo "==> Updating D1S submodules"
+for entry in "${PATCHES[@]}"; do
+  dir="${entry%%:*}"
+  git submodule update --init --recursive "$dir"
+done
+
+echo "==> Applying D1S cumulative patches"
+for entry in "${PATCHES[@]}"; do
+  dir="${entry%%:*}"
+  patch="${entry#*:}"
+  subdir="$ROOT/$dir"
+  patch_path="$ROOT/$patch"
+
+  if [[ ! -f "$patch_path" ]]; then
+    echo "error: missing patch: $patch" >&2
+    exit 1
+  fi
+
+  if [[ ! -d "$subdir" ]]; then
+    echo "error: missing submodule dir: $dir" >&2
+    exit 1
+  fi
+
+  if git -C "$subdir" apply --check --reverse "$patch_path" >/dev/null 2>&1; then
+    echo "skip: $dir already has $patch"
+    continue
+  fi
+
+  if git -C "$subdir" apply --check "$patch_path" >/dev/null 2>&1; then
+    git -C "$subdir" apply "$patch_path"
+    echo "applied: $patch -> $dir"
+    continue
+  fi
+
+  echo "error: cannot apply $patch to $dir" >&2
+  echo "       likely wrong submodule base or conflicting local edits." >&2
+  echo "       inspect with:" >&2
+  echo "         git -C $dir status --short" >&2
+  echo "         git -C $dir apply --check $patch_path" >&2
+  exit 1
+done
+
+echo "==> Done"
+echo "Submodule status:"
+git submodule status grbl keypad sdcard
