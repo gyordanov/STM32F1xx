@@ -1190,10 +1190,90 @@ index 7fc24d7..ea810d1 100644
  
  FLASHMEM char *btoa (uint64_t bytes)
 diff --git a/system.c b/system.c
-index a9d3580..e6625ba 100644
+index a9d3580..f3f76b1 100644
 --- a/system.c
 +++ b/system.c
-@@ -913,29 +913,37 @@ FLASHMEM const char *help_reboot (const char *cmd)
+@@ -33,6 +33,28 @@
+ #include "kinematics.h"
+ #endif
+ 
++#ifndef D1S_CTRLDBG_ENABLE
++#define D1S_CTRLDBG_ENABLE 0
++#endif
++
++#if defined(BOARD_HIMILL_D1S) && D1S_CTRLDBG_ENABLE
++enum {
++    D1S_DBG_ACT_CRITICAL = 1,
++    D1S_DBG_ACT_DOOR,
++    D1S_DBG_ACT_PROBE_OVERTRAVEL,
++    D1S_DBG_ACT_PROBE_PROTECT,
++    D1S_DBG_ACT_PROBE_DISCONNECT,
++    D1S_DBG_ACT_FEED_HOLD,
++    D1S_DBG_ACT_CYCLE_START,
++    D1S_DBG_ACT_ONOFF
++};
++
++extern void d1s_ctrldbg_note_control_from_isr (uint8_t action, control_signals_t signals);
++#define D1S_CTRLDBG_NOTE(action, signals) d1s_ctrldbg_note_control_from_isr((action), (signals))
++#else
++#define D1S_CTRLDBG_NOTE(action, signals)
++#endif
++
+ /*! \internal \brief Simple hypotenuse computation function.
+ \param x length
+ \param y height
+@@ -87,11 +109,13 @@ ISR_CODE void ISR_FUNC(control_interrupt_handler)(control_signals_t signals)
+         sys.last_event.control.bits = signals.bits;
+ 
+         if(signals.bits & critical_signals.bits) {
++            D1S_CTRLDBG_NOTE(D1S_DBG_ACT_CRITICAL, signals);
+             if(state_get() != STATE_ESTOP)
+                 mc_reset();
+         } else {
+ #ifndef NO_SAFETY_DOOR_SUPPORT
+             if(signals.safety_door_ajar && hal.signals_cap.safety_door_ajar && !gc_state.tool_change) {
++                D1S_CTRLDBG_NOTE(D1S_DBG_ACT_DOOR, signals);
+             	sys.flags.is_parking = false;
+                 if(settings.safety_door.flags.ignore_when_idle) {
+                     // Only stop the spindle (laser off) when idle or jogging,
+@@ -106,6 +130,7 @@ ISR_CODE void ISR_FUNC(control_interrupt_handler)(control_signals_t signals)
+             }
+ #endif
+             if(signals.probe_overtravel || signals.tls_overtravel) {
++                D1S_CTRLDBG_NOTE(D1S_DBG_ACT_PROBE_OVERTRAVEL, signals);
+                 event_signals.probe_overtravel = On;
+                 event_signals.tls_overtravel = signals.tls_overtravel;
+                 limit_signals_t overtravel = { .min.z = On};
+@@ -113,21 +138,26 @@ ISR_CODE void ISR_FUNC(control_interrupt_handler)(control_signals_t signals)
+                 // TODO: add message?
+             } else if(signals.probe_triggered) {
+                 if(sys.probing_state == Probing_Off && (state_get() & (STATE_CYCLE|STATE_JOG))) {
++                    D1S_CTRLDBG_NOTE(D1S_DBG_ACT_PROBE_PROTECT, signals);
+                     system_set_exec_state_flag(EXEC_STOP);
+                     sys.alarm_pending = Alarm_ProbeProtect;
+                 } else
+                     hal.probe.configure(false, false);
+             } else if(signals.probe_disconnected) {
++                D1S_CTRLDBG_NOTE(D1S_DBG_ACT_PROBE_DISCONNECT, signals);
+                 event_signals.probe_disconnected = On;
+                 if(sys.probing_state == Probing_Active && state_get() == STATE_CYCLE) {
+                     system_set_exec_state_flag(EXEC_FEED_HOLD);
+                     sys.alarm_pending = Alarm_ProbeProtect;
+                 } else
+                     task_add_immediate(probe_connected_event, NULL);
+-            } else if(signals.feed_hold)
++            } else if(signals.feed_hold) {
++                D1S_CTRLDBG_NOTE(D1S_DBG_ACT_FEED_HOLD, signals);
+                 system_set_exec_state_flag(EXEC_FEED_HOLD);
+-            else if(signals.cycle_start)
++            } else if(signals.cycle_start) {
++                D1S_CTRLDBG_NOTE(D1S_DBG_ACT_CYCLE_START, signals);
+                 event_signals.cycle_start = On;
++            }
+ 
+             if(signals.block_delete)
+                 sys.flags.block_delete_enabled = !signals.deasserted;
+@@ -913,29 +943,37 @@ FLASHMEM const char *help_reboot (const char *cmd)
  
  /*! \brief Command dispatch table
   */
@@ -1247,7 +1327,7 @@ index a9d3580..e6625ba 100644
      { "HX", home_x },
      { "HY", home_y },
      { "HZ", home_z },
-@@ -957,49 +965,49 @@ PROGMEM static const sys_command_t sys_commands[] = {
+@@ -957,49 +995,49 @@ PROGMEM static const sys_command_t sys_commands[] = {
  #ifdef W_AXIS
      { "HW", home_w },
  #endif
