@@ -61,7 +61,17 @@ extern uint32_t diskio_d1s_diagnostics (void);
 #define HIMILL_BOOTFLAG_ADDR   ((volatile uint32_t *)0x2000BFF0UL)
 #define HIMILL_BOOTFLAG_MAGIC  0xFA0505F5UL
 #define HIMILL_D1S_PLUGIN_NAME    "HIMILL_D1S"
-#define HIMILL_D1S_PLUGIN_VERSION "0.12"
+#ifndef D1S_CTRLDBG_ENABLE
+#define D1S_CTRLDBG_ENABLE 0
+#endif
+#ifndef D1S_MPG_GATE_ENABLE
+#define D1S_MPG_GATE_ENABLE 0
+#endif
+#if D1S_CTRLDBG_ENABLE
+#define HIMILL_D1S_PLUGIN_VERSION "0.13-ctrldbg"
+#else
+#define HIMILL_D1S_PLUGIN_VERSION "0.13"
+#endif
 #define D1S_PROBE_PROTECT_POLL_MS 10U
 #define D1S_PROBE_PROTECT_SAMPLES 2U
 
@@ -170,6 +180,122 @@ static void d1s_wrsephex (uint32_t v)
     hal.stream.write(",");
     hal.stream.write(d1s_hex32(v));
 }
+
+#if D1S_CTRLDBG_ENABLE
+
+#define D1S_CTRLDBG_RING_MASK 0x0FU
+
+enum {
+    D1S_DBG_KIND_RT = 1,
+    D1S_DBG_KIND_PIN,
+    D1S_DBG_KIND_CTRL,
+    D1S_DBG_KIND_MUX
+};
+
+enum {
+    D1S_DBG_SRC_CTRL = 1,
+    D1S_DBG_SRC_USB,
+    D1S_DBG_SRC_NET,
+    D1S_DBG_SRC_MPG,
+    D1S_DBG_SRC_PC4,
+    D1S_DBG_SRC_PB1,
+    D1S_DBG_SRC_RTMUX
+};
+
+enum {
+    D1S_DBG_ACT_CRITICAL = 1,
+    D1S_DBG_ACT_DOOR,
+    D1S_DBG_ACT_PROBE_OVERTRAVEL,
+    D1S_DBG_ACT_PROBE_PROTECT,
+    D1S_DBG_ACT_PROBE_DISCONNECT,
+    D1S_DBG_ACT_FEED_HOLD,
+    D1S_DBG_ACT_CYCLE_START,
+    D1S_DBG_ACT_ONOFF
+};
+
+typedef struct {
+    uint32_t tick;
+    uint32_t signals;
+    uint8_t kind;
+    uint8_t source;
+    uint8_t code;
+    uint8_t state;
+    uint8_t pc4;
+    uint8_t pb1;
+} d1s_ctrl_dbg_event_t;
+
+static volatile d1s_ctrl_dbg_event_t d1s_ctrl_dbg_ring[16];
+static volatile uint8_t d1s_ctrl_dbg_head = 0;
+static volatile uint8_t d1s_ctrl_dbg_tail = 0;
+static volatile uint8_t d1s_ctrl_dbg_lost = 0;
+
+static bool d1s_ctrl_dbg_interesting_rt (uint8_t c)
+{
+    switch(c) {
+        case CMD_RESET:
+        case CMD_STOP:
+        case CMD_CYCLE_START_LEGACY:
+        case CMD_FEED_HOLD_LEGACY:
+        case CMD_CYCLE_START:
+        case CMD_FEED_HOLD:
+        case CMD_SAFETY_DOOR:
+        case CMD_JOG_CANCEL:
+        case CMD_MPG_MODE_TOGGLE:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+static void d1s_ctrl_dbg_record (uint8_t kind, uint8_t source, uint8_t code, control_signals_t signals)
+{
+    if(kind == D1S_DBG_KIND_RT && !d1s_ctrl_dbg_interesting_rt(code))
+        return;
+
+    uint8_t head = d1s_ctrl_dbg_head;
+    uint8_t next = (head + 1U) & D1S_CTRLDBG_RING_MASK;
+
+    if(next == d1s_ctrl_dbg_tail) {
+        d1s_ctrl_dbg_lost++;
+        return;
+    }
+
+    volatile d1s_ctrl_dbg_event_t *event = &d1s_ctrl_dbg_ring[head];
+    event->tick = hal.get_elapsed_ticks ? hal.get_elapsed_ticks() : 0;
+    event->signals = signals.mask;
+    event->kind = kind;
+    event->source = source;
+    event->code = code;
+    event->state = (uint8_t)state_get();
+    event->pc4 = DIGITAL_IN(GPIOC, 4) ? 0 : 1;
+    event->pb1 = DIGITAL_IN(GPIOB, 1) ? 0 : 1;
+
+    d1s_ctrl_dbg_head = next;
+}
+
+static void d1s_ctrl_dbg_rt (uint8_t source, uint8_t c)
+{
+    d1s_ctrl_dbg_record(D1S_DBG_KIND_RT, source, c, (control_signals_t){0});
+}
+
+static void d1s_ctrl_dbg_pin (uint8_t source, control_signals_t signals)
+{
+    d1s_ctrl_dbg_record(D1S_DBG_KIND_PIN, source, 0, signals);
+}
+
+void d1s_ctrldbg_note_control_from_isr (uint8_t action, control_signals_t signals)
+{
+    d1s_ctrl_dbg_record(D1S_DBG_KIND_CTRL, D1S_DBG_SRC_CTRL, action, signals);
+}
+
+#else
+
+#define d1s_ctrl_dbg_record(kind, source, code, signals)
+#define d1s_ctrl_dbg_rt(source, c)
+#define d1s_ctrl_dbg_pin(source, signals)
+
+#endif
 
 void himill_d1s_reset_diag_boot_capture (void)
 {
@@ -615,6 +741,8 @@ static const io_stream_t *mpg_uart_stream = NULL;
 // 2-second window even WITH himill_mpg_rx_filter's debounce active).
 static bool himill_intercept_rt (uint8_t c)
 {
+    d1s_ctrl_dbg_rt(D1S_DBG_SRC_RTMUX, c);
+
     if (c == CMD_MPG_MODE_TOGGLE) {
         uint32_t now = hal.get_elapsed_ticks ? hal.get_elapsed_ticks() : 0;
         if ((now - mpg_last_toggle_ticks) < HIMILL_MPG_TOGGLE_DEBOUNCE_MS)
@@ -642,6 +770,8 @@ static bool himill_intercept_rt (uint8_t c)
 //     the parser reads them via hal.stream.read = mpg.stream.read
 static bool himill_mpg_rx_filter (uint8_t c)
 {
+    d1s_ctrl_dbg_rt(D1S_DBG_SRC_MPG, c);
+
     uint32_t now = hal.get_elapsed_ticks ? hal.get_elapsed_ticks() : 0;
 
     if (c == CMD_MPG_MODE_TOGGLE) {
@@ -762,6 +892,125 @@ static volatile uint32_t  esp_tunnel_until_ms = 0;
 // order. USB TX still drains via the host/USB ISR, so the outer write unblocks.
 static bool esp_tunnel_draining = false;
 
+#if D1S_CTRLDBG_ENABLE
+static bool mux_stream_connected (const io_stream_t *s);
+
+static const char *d1s_ctrl_dbg_kind_name (uint8_t kind)
+{
+    switch(kind) {
+        case D1S_DBG_KIND_RT:   return "rt";
+        case D1S_DBG_KIND_PIN:  return "pin";
+        case D1S_DBG_KIND_CTRL: return "ctrl";
+        case D1S_DBG_KIND_MUX:  return "mux";
+        default:                return "?";
+    }
+}
+
+static const char *d1s_ctrl_dbg_source_name (uint8_t source)
+{
+    switch(source) {
+        case D1S_DBG_SRC_CTRL:  return "ctrl";
+        case D1S_DBG_SRC_USB:   return "usb";
+        case D1S_DBG_SRC_NET:   return "net";
+        case D1S_DBG_SRC_MPG:   return "mpg";
+        case D1S_DBG_SRC_PC4:   return "pc4";
+        case D1S_DBG_SRC_PB1:   return "pb1";
+        case D1S_DBG_SRC_RTMUX: return "rtmux";
+        default:                return "?";
+    }
+}
+
+static const char *d1s_ctrl_dbg_action_name (uint8_t action)
+{
+    switch(action) {
+        case D1S_DBG_ACT_CRITICAL:          return "critical";
+        case D1S_DBG_ACT_DOOR:              return "door";
+        case D1S_DBG_ACT_PROBE_OVERTRAVEL:  return "probe-overtravel";
+        case D1S_DBG_ACT_PROBE_PROTECT:     return "probe-protect";
+        case D1S_DBG_ACT_PROBE_DISCONNECT:  return "probe-disconnect";
+        case D1S_DBG_ACT_FEED_HOLD:         return "feed-hold";
+        case D1S_DBG_ACT_CYCLE_START:       return "cycle-start";
+        case D1S_DBG_ACT_ONOFF:             return "onoff";
+        default:                            return "?";
+    }
+}
+
+static void d1s_ctrl_dbg_write (const char *s)
+{
+    if(hal.stream.write_all)
+        hal.stream.write_all(s);
+}
+
+static void d1s_ctrl_dbg_write_dec (uint32_t v)
+{
+    d1s_ctrl_dbg_write(uitoa(v));
+}
+
+static void d1s_ctrl_dbg_write_hex (uint32_t v)
+{
+    d1s_ctrl_dbg_write(d1s_hex32(v));
+}
+
+static void d1s_ctrl_dbg_flush (sys_state_t state)
+{
+    if(!hal.stream.write_all)
+        return;
+
+    while(d1s_ctrl_dbg_tail != d1s_ctrl_dbg_head) {
+        uint8_t tail = d1s_ctrl_dbg_tail;
+        d1s_ctrl_dbg_event_t event = d1s_ctrl_dbg_ring[tail];
+        d1s_ctrl_dbg_tail = (tail + 1U) & D1S_CTRLDBG_RING_MASK;
+
+        control_signals_t current = hal.control.get_state ? hal.control.get_state() : (control_signals_t){0};
+
+        d1s_ctrl_dbg_write("[MSG:D1DBG t=");
+        d1s_ctrl_dbg_write_dec(event.tick);
+        d1s_ctrl_dbg_write(" k=");
+        d1s_ctrl_dbg_write(d1s_ctrl_dbg_kind_name(event.kind));
+        d1s_ctrl_dbg_write(" src=");
+        d1s_ctrl_dbg_write(d1s_ctrl_dbg_source_name(event.source));
+        if(event.kind == D1S_DBG_KIND_CTRL) {
+            d1s_ctrl_dbg_write(" act=");
+            d1s_ctrl_dbg_write(d1s_ctrl_dbg_action_name(event.code));
+        } else if(event.kind == D1S_DBG_KIND_RT || event.kind == D1S_DBG_KIND_MUX) {
+            d1s_ctrl_dbg_write(" code=");
+            d1s_ctrl_dbg_write_dec(event.code);
+        }
+        d1s_ctrl_dbg_write(" st=");
+        d1s_ctrl_dbg_write_dec(event.state);
+        d1s_ctrl_dbg_write(" now=");
+        d1s_ctrl_dbg_write_dec((uint32_t)state);
+        d1s_ctrl_dbg_write(" sig=");
+        d1s_ctrl_dbg_write_hex(event.signals);
+        d1s_ctrl_dbg_write(" cur=");
+        d1s_ctrl_dbg_write_hex(current.mask);
+        d1s_ctrl_dbg_write(" pc4=");
+        d1s_ctrl_dbg_write_dec(event.pc4);
+        d1s_ctrl_dbg_write(" pb1=");
+        d1s_ctrl_dbg_write_dec(event.pb1);
+        d1s_ctrl_dbg_write(" mx=");
+        d1s_ctrl_dbg_write_dec((uint32_t)mux_controller);
+        d1s_ctrl_dbg_write(" usb=");
+        d1s_ctrl_dbg_write_dec(mux_stream_connected(mux_usb) ? 1 : 0);
+        d1s_ctrl_dbg_write(" net=");
+        d1s_ctrl_dbg_write_dec(d1s_net_present ? 1 : 0);
+        d1s_ctrl_dbg_write(" dtr=");
+        d1s_ctrl_dbg_write_dec(mux_dtr_edges);
+        d1s_ctrl_dbg_write("]" ASCII_EOL);
+    }
+
+    if(d1s_ctrl_dbg_lost) {
+        uint8_t lost = d1s_ctrl_dbg_lost;
+        d1s_ctrl_dbg_lost = 0;
+        d1s_ctrl_dbg_write("[MSG:D1DBG lost=");
+        d1s_ctrl_dbg_write_dec(lost);
+        d1s_ctrl_dbg_write("]" ASCII_EOL);
+    }
+}
+#else
+#define d1s_ctrl_dbg_flush(state)
+#endif
+
 // Pick active based on DTR. USB if host has port open, otherwise UART.
 static const io_stream_t *mux_active (void)
 {
@@ -848,6 +1097,8 @@ static bool mux_enqueue_rt_from (const io_stream_t *source, uint8_t c)
     bool drop;
     enqueue_realtime_command_ptr handler = mux_rt_handler ? mux_rt_handler : protocol_enqueue_realtime_command;
 
+    d1s_ctrl_dbg_rt(source == mux_usb ? D1S_DBG_SRC_USB : (source == mux_uart ? D1S_DBG_SRC_NET : D1S_DBG_SRC_RTMUX), c);
+
     mux_reply_owner = source;
 
     if (mux_rt_owner_locked && mux_rt_owner && source != mux_rt_owner)
@@ -917,6 +1168,7 @@ static void mux_update_usb_presence (void)
         return;
 
     mux_dtr_edges++;                               // telemetry: a real DTR transition
+    d1s_ctrl_dbg_record(D1S_DBG_KIND_MUX, D1S_DBG_SRC_USB, now ? 1 : 0, (control_signals_t){0});
 
     if (now) {                                     // USB connect edge
         if (mux_takeover_allowed())                // newest-wins, but never steal a running job
@@ -1532,7 +1784,7 @@ static void himill_poll_buttons (sys_state_t state)
     // unplugging hands control back to the network side.
     mux_update_usb_presence();
 
-#if MPG_ENABLE == 2 && !defined(HIMILL_SKIP_MUX)
+#if D1S_MPG_GATE_ENABLE && !defined(HIMILL_SKIP_MUX)
     // Re-install our filter as UART4's rx_handler. stream_mpg_enable swaps
     // it for protocol_enqueue_realtime_command on every transition (grbl/
     // stream.c:705 and :723 alternately install protocol-handler when MPG
@@ -1566,6 +1818,7 @@ static void himill_poll_buttons (sys_state_t state)
             && himill_prepare_toolchange_button(state)) {
         control_signals_t signals = {0};
         signals.cycle_start = On;
+        d1s_ctrl_dbg_pin(D1S_DBG_SRC_PC4, signals);
         hal.control.interrupt_callback(signals);
     }
     button_pc4_prev_pressed = pc4_pressed;
@@ -1574,9 +1827,12 @@ static void himill_poll_buttons (sys_state_t state)
     if (pb1_pressed && !button_pb1_prev_pressed && hal.control.interrupt_callback) {
         control_signals_t signals = {0};
         signals.safety_door_ajar = On;
+        d1s_ctrl_dbg_pin(D1S_DBG_SRC_PB1, signals);
         hal.control.interrupt_callback(signals);
     }
     button_pb1_prev_pressed = pb1_pressed;
+
+    d1s_ctrl_dbg_flush(state);
 
     // Laser-mode mirror: copy spindle PWM duty + enable to laser hardware
     // so M3/M5/spindle commands drive PB0/PC5 in lock-step with PB8/PB9.
@@ -2489,6 +2745,7 @@ static status_code_t himill_user_command (char *line)
     if (strcmp(line, "[DN:U]") == 0) {                 // NET connect
         if (mux_last_rx_owner == mux_uart) {
             d1s_net_present = true;
+            d1s_ctrl_dbg_record(D1S_DBG_KIND_MUX, D1S_DBG_SRC_NET, 1, (control_signals_t){0});
             if (mux_takeover_allowed())                // newest-wins, but never steal a running job
                 mux_controller = MUX_CTRL_NET;
         }
@@ -2498,6 +2755,7 @@ static status_code_t himill_user_command (char *line)
     if (strcmp(line, "[DN:D]") == 0) {                 // NET disconnect
         if (mux_last_rx_owner == mux_uart) {
             d1s_net_present = false;
+            d1s_ctrl_dbg_record(D1S_DBG_KIND_MUX, D1S_DBG_SRC_NET, 0, (control_signals_t){0});
             if (mux_controller == MUX_CTRL_NET)        // hand back to USB if present
                 mux_controller = mux_stream_connected(mux_usb) ? MUX_CTRL_USB
                                                                : MUX_CTRL_NONE;
@@ -2623,6 +2881,7 @@ static void himill_stream_changed (stream_type_t type)
 #define HIMILL_SETTING_CLEAN_ENABLE          0x01
 #define HIMILL_SETTING_STEPPER_SPREADCYCLE   0x02
 #define HIMILL_SETTING_RGB_STATUS_ENABLE     0x04
+#define HIMILL_SETTING_MPG_ENABLE            0x08
 #define HIMILL_SETTINGS_DEFAULT_FLAGS        HIMILL_SETTING_STEPPER_SPREADCYCLE
 
 typedef struct {
@@ -2633,6 +2892,20 @@ typedef struct {
 static himill_settings_t himill_settings;
 static nvs_address_t himill_nvs_address;
 static on_tool_selected_ptr on_tool_selected;
+
+static void himill_settings_set_defaults (void)
+{
+    himill_settings.magic = HIMILL_SETTINGS_MAGIC;
+    himill_settings.flags = HIMILL_SETTINGS_DEFAULT_FLAGS;
+}
+
+static bool himill_settings_read_nvs (void)
+{
+    return himill_nvs_address &&
+           hal.nvs.memcpy_from_nvs &&
+           hal.nvs.memcpy_from_nvs((uint8_t *)&himill_settings, himill_nvs_address, sizeof(himill_settings_t), true) == NVS_TransferResult_OK &&
+           himill_settings.magic == HIMILL_SETTINGS_MAGIC;
+}
 
 static const setting_group_detail_t himill_setting_groups[] = {
     { Group_Root, Group_UserSettings, "D1S" }
@@ -2655,62 +2928,81 @@ static void himill_settings_save (void)
     hal.nvs.memcpy_to_nvs(himill_nvs_address, (uint8_t *)&himill_settings, sizeof(himill_settings_t), true);
 }
 
-static status_code_t himill_set_clean (setting_id_t id, uint_fast16_t value)
+static uint8_t himill_setting_flag (setting_id_t id)
 {
-    if (value)
-        himill_settings.flags |= HIMILL_SETTING_CLEAN_ENABLE;
-    else
-        himill_settings.flags &= ~HIMILL_SETTING_CLEAN_ENABLE;
-    himill_settings_save();
-    return Status_OK;
-}
-
-static uint32_t himill_get_clean (setting_id_t id)
-{
-    return (himill_settings.flags & HIMILL_SETTING_CLEAN_ENABLE) ? 1 : 0;
-}
-
-static status_code_t himill_set_stepper_mode (setting_id_t id, uint_fast16_t value)
-{
-    if (value)
-        himill_settings.flags |= HIMILL_SETTING_STEPPER_SPREADCYCLE;
-    else
-        himill_settings.flags &= ~HIMILL_SETTING_STEPPER_SPREADCYCLE;
-    himill_settings_save();
-    apply_stepper_mode(!!(himill_settings.flags & HIMILL_SETTING_STEPPER_SPREADCYCLE));
-    return Status_OK;
-}
-
-static uint32_t himill_get_stepper_mode (setting_id_t id)
-{
-    return (himill_settings.flags & HIMILL_SETTING_STEPPER_SPREADCYCLE) ? 1 : 0;
-}
-
+    switch(id) {
+        case Setting_UserDefined_0:
+            return HIMILL_SETTING_CLEAN_ENABLE;
+        case Setting_UserDefined_1:
+            return HIMILL_SETTING_STEPPER_SPREADCYCLE;
 #if RGB_LED_ENABLE == 2
-static status_code_t himill_set_rgb_status (setting_id_t id, uint_fast16_t value)
+        case Setting_UserDefined_2:
+            return HIMILL_SETTING_RGB_STATUS_ENABLE;
+#endif
+#if D1S_MPG_GATE_ENABLE
+        case Setting_UserDefined_3:
+            return HIMILL_SETTING_MPG_ENABLE;
+#endif
+        default:
+            return 0;
+    }
+}
+
+static void himill_apply_setting_flag (setting_id_t id)
 {
+    if (id == Setting_UserDefined_1)
+        apply_stepper_mode(!!(himill_settings.flags & HIMILL_SETTING_STEPPER_SPREADCYCLE));
+#if RGB_LED_ENABLE == 2
+    else if (id == Setting_UserDefined_2)
+        himill_rgb_set_enabled(!!(himill_settings.flags & HIMILL_SETTING_RGB_STATUS_ENABLE));
+#endif
+}
+
+static status_code_t himill_set_flag (setting_id_t id, uint_fast16_t value)
+{
+    uint8_t flag = himill_setting_flag(id);
+
     if (value)
-        himill_settings.flags |= HIMILL_SETTING_RGB_STATUS_ENABLE;
+        himill_settings.flags |= flag;
     else
-        himill_settings.flags &= ~HIMILL_SETTING_RGB_STATUS_ENABLE;
+        himill_settings.flags &= (uint8_t)~flag;
     himill_settings_save();
-    himill_rgb_set_enabled(!!(himill_settings.flags & HIMILL_SETTING_RGB_STATUS_ENABLE));
+    himill_apply_setting_flag(id);
     return Status_OK;
 }
 
-static uint32_t himill_get_rgb_status (setting_id_t id)
+static uint32_t himill_get_flag (setting_id_t id)
 {
-    return (himill_settings.flags & HIMILL_SETTING_RGB_STATUS_ENABLE) ? 1 : 0;
+    return (himill_settings.flags & himill_setting_flag(id)) ? 1 : 0;
 }
-#endif
 
 static const setting_detail_t himill_setting_detail[] = {
-    { Setting_UserDefined_0, Group_UserSettings, "Clean", NULL, Format_Bool, NULL, NULL, NULL, Setting_NonCoreFn, himill_set_clean, himill_get_clean, NULL },
-    { Setting_UserDefined_1, Group_UserSettings, "TMC", NULL, Format_RadioButtons, "S,C", NULL, NULL, Setting_NonCoreFn, himill_set_stepper_mode, himill_get_stepper_mode, NULL },
+    { Setting_UserDefined_0, Group_UserSettings, "Clean", NULL, Format_Bool, NULL, NULL, NULL, Setting_NonCoreFn, himill_set_flag, himill_get_flag, NULL },
+    { Setting_UserDefined_1, Group_UserSettings, "TMC", NULL, Format_RadioButtons, "S,C", NULL, NULL, Setting_NonCoreFn, himill_set_flag, himill_get_flag, NULL },
 #if RGB_LED_ENABLE == 2
-    { Setting_UserDefined_2, Group_UserSettings, "RGB", NULL, Format_Bool, NULL, NULL, NULL, Setting_NonCoreFn, himill_set_rgb_status, himill_get_rgb_status, NULL }
+    { Setting_UserDefined_2, Group_UserSettings, "RGB", NULL, Format_Bool, NULL, NULL, NULL, Setting_NonCoreFn, himill_set_flag, himill_get_flag, NULL },
+#endif
+#if D1S_MPG_GATE_ENABLE
+    { Setting_UserDefined_3, Group_UserSettings, "MPG", NULL, Format_Bool, NULL, NULL, NULL, Setting_NonCoreFn, himill_set_flag, himill_get_flag, NULL, { .reboot_required = On } }
 #endif
 };
+
+static void himill_mpg_boot_init (void)
+{
+#if D1S_MPG_GATE_ENABLE
+    if (!(himill_settings.flags & HIMILL_SETTING_MPG_ENABLE) || hal.driver_cap.mpg_mode)
+        return;
+
+    mpg_uart_stream = stream_open_instance(MPG_STREAM, 115200, NULL, NULL);
+    hal.driver_cap.mpg_mode = stream_mpg_register(
+        mpg_uart_stream, false, himill_mpg_rx_filter);
+    if (hal.driver_cap.mpg_mode && mux_initialized) {
+        hal.stream.write_all = mux_write_all;
+        mux_rt_handler = himill_intercept_rt;
+        mux_rt_owner_locked = false;
+    }
+#endif
+}
 
 static void himill_profile_update_soft_limits (void)
 {
@@ -2867,8 +3159,17 @@ static void seed_himill_coord_defaults (void)
 
 static void himill_settings_restore (void)
 {
-    himill_settings.magic = HIMILL_SETTINGS_MAGIC;
-    himill_settings.flags = HIMILL_SETTINGS_DEFAULT_FLAGS; // default: SpreadCycle, RGB/tool-clean off
+#if D1S_MPG_GATE_ENABLE
+    // Preserve a user-enabled pendant across profile/installer restores. Fresh
+    // or invalid NVS has no valid magic, so MPG still defaults off.
+    uint8_t mpg_enabled = himill_settings.magic == HIMILL_SETTINGS_MAGIC
+                          ? (himill_settings.flags & HIMILL_SETTING_MPG_ENABLE) : 0;
+#endif
+
+    himill_settings_set_defaults(); // default: SpreadCycle; MPG, RGB and tool-clean off.
+#if D1S_MPG_GATE_ENABLE
+    himill_settings.flags |= mpg_enabled;
+#endif
     himill_settings_save();
     apply_stepper_mode(!!(himill_settings.flags & HIMILL_SETTING_STEPPER_SPREADCYCLE));
 #if RGB_LED_ENABLE == 2
@@ -2880,8 +3181,7 @@ static void himill_settings_restore (void)
 
 static void himill_settings_load (void)
 {
-    if (hal.nvs.memcpy_from_nvs((uint8_t *)&himill_settings, himill_nvs_address, sizeof(himill_settings_t), true) != NVS_TransferResult_OK ||
-        himill_settings.magic != HIMILL_SETTINGS_MAGIC) {
+    if (!himill_settings_read_nvs()) {
         himill_settings_restore();
         himill_settings.magic = 0; // RAM-only marker for $I warning; NVS was repaired.
     }
@@ -2892,6 +3192,7 @@ static void himill_settings_load (void)
 #endif
     himill_profile_repair();
     seed_himill_coord_defaults();
+    himill_mpg_boot_init();
 }
 
 static setting_details_t himill_setting_details = {
@@ -3011,7 +3312,11 @@ void board_init (void)
     on_stream_changed       = grbl.on_stream_changed;
     grbl.on_stream_changed  = himill_stream_changed;
 
-    // Toolsetter cleaning hook — fires before each M6, gated by $450.
+    // D1S private settings. Allocate before NVS buffering imports physical
+    // storage, but do not read here: on flash-backed NVS, memcpy_from_nvs is not
+    // installed until after driver_init() returns and nvs_buffer_init() runs.
+    // himill_settings_load() later reads NVS and boot-enables MPG if $453=1.
+    himill_settings_set_defaults();
     if ((himill_nvs_address = nvs_alloc(sizeof(himill_settings_t)))) {
         on_tool_selected      = grbl.on_tool_selected;
         grbl.on_tool_selected = himill_clean_toolsetter;
@@ -3071,27 +3376,8 @@ void board_init (void)
     }
 #endif // !HIMILL_SKIP_MUX
 
-    // MPG init runs whether or not the mux is installed. In mux mode, we
-    // pre-register MPG to undo the hal.stream.write_all clobber from
-    // stream_mpg_register. In isolation mode (HIMILL_SKIP_MUX), MPG runs
-    // on top of stock grblHAL streams (USB CDC primary, UART4 secondary)
-    // — useful to bisect whether the himill mux is contributing to the
-    // SmartPendant MPG-toggle bug observed on D1S vs flexihal F4.
-#if MPG_ENABLE == 2
-    mpg_uart_stream = stream_open_instance(MPG_STREAM, 115200, NULL, NULL);
-    hal.driver_cap.mpg_mode = stream_mpg_register(
-        mpg_uart_stream, false, himill_mpg_rx_filter);
-    if (hal.driver_cap.mpg_mode && mux_initialized)
-        hal.stream.write_all = mux_write_all;
-    // Install 0x8B debounce as mux_rt_handler. Only meaningful when the
-    // mux's enqueue-rt wrappers are wired up (i.e. mux mode). In isolation
-    // mode this static is set but unused — UART4-during-MPG-active will
-    // route 0x8B through whatever stream_mpg_enable's swap installs.
-    if (hal.driver_cap.mpg_mode && mux_initialized) {
-        mux_rt_handler = himill_intercept_rt;
-        mux_rt_owner_locked = false;
-    }
-#endif
+    // MPG registration is deferred to himill_settings_load(), after NVS data is
+    // available. $453 changes are saved immediately but require reboot/reset.
 }
 
 #endif // BOARD_HIMILL_D1S
