@@ -35,7 +35,7 @@ index 851b283..e821f12 100644
      }
  
 diff --git a/fs_stream.c b/fs_stream.c
-index 6f4cc74..7979754 100644
+index 6f4cc74..95e1588 100644
 --- a/fs_stream.c
 +++ b/fs_stream.c
 @@ -21,6 +21,12 @@
@@ -241,7 +241,7 @@ index 6f4cc74..7979754 100644
  static io_stream_t active_stream;
  static driver_reset_ptr driver_reset = NULL;
  static on_realtime_report_ptr on_realtime_report;
-@@ -110,16 +278,20 @@ static on_vfs_unmount_ptr on_vfs_unmount;
+@@ -110,12 +278,16 @@ static on_vfs_unmount_ptr on_vfs_unmount;
  
  static void onCycleStart (void);
  static void stream_end_job (bool flush);
@@ -258,11 +258,6 @@ index 6f4cc74..7979754 100644
  #if FS_ENABLE & FS_SDCARD
  FLASHMEM static status_code_t reclaim_sdcard_if_external (void)
  {
--    if(sdcard_is_released_to_external() && !sdcard_reclaim_from_external()) {
-+    if(sdcard_is_released_to_external()) {
-         report_message("SD card owned externally", Message_Warning);
-         return Status_SDNotMounted;
-     }
 @@ -190,11 +362,11 @@ static int scan_dir (char *path, uint_fast8_t depth, char *buf, bool filtered)
          subdirs |= depth > 0 && dirent->st_mode.directory && !dirent->st_mode.hidden;
  
@@ -683,7 +678,7 @@ index b98bf09..2a8d6b6 100644
          .save = settings_write_global
      };
 diff --git a/sdcard.c b/sdcard.c
-index e256028..a108cae 100644
+index e256028..bb95963 100644
 --- a/sdcard.c
 +++ b/sdcard.c
 @@ -21,6 +21,12 @@
@@ -725,7 +720,7 @@ index e256028..a108cae 100644
  
      return released_to_external;
  }
-@@ -171,12 +186,28 @@ FLASHMEM bool sdcard_reclaim_from_external (void)
+@@ -171,8 +186,27 @@ FLASHMEM bool sdcard_reclaim_from_external (void)
          if(sdcard.on_reclaim && !sdcard.on_reclaim())
              return false;
  
@@ -733,11 +728,15 @@ index e256028..a108cae 100644
 +        diskio_d1s_prepare_reclaim();
 +#endif
          released_to_external = false;
-     }
- 
-     return sdcard_mount();
- }
- 
+-    }
++    } else if(fatfs != NULL)
++        return true;    // grbl already owns a mounted card — don't re-mount it. A
++                        // re-mount during the post-write SD-busy window can fail
++                        // (NULLing fatfs), surfacing to ESP3D as [D1SP:ERR:mount].
++
++    return sdcard_mount();
++}
++
 +FLASHMEM bool sdcard_reclaim_from_external_done (void)
 +{
 +    if(!released_to_external)
@@ -747,14 +746,25 @@ index e256028..a108cae 100644
 +    diskio_d1s_prepare_reclaim();
 +#endif
 +    released_to_external = false;
-+
-+    return sdcard_mount();
-+}
-+
- FLASHMEM bool sdcard_is_released_to_external (void)
+ 
+     return sdcard_mount();
+ }
+@@ -189,6 +223,14 @@ FLASHMEM void sdcard_set_reclaim_callback (on_reclaim_ptr on_reclaim)
+ 
+ FLASHMEM static status_code_t sd_cmd_mount (sys_state_t state, char *args)
  {
-     return released_to_external;
-@@ -292,8 +323,8 @@ FLASHMEM sdcard_events_t *sdcard_init (void)
++    // $FM is a no-op when grblHAL already holds a mounted card: return OK
++    // immediately rather than forcing a re-mount. On the D1S a forced re-mount
++    // can stall behind SD-busy right after an HTTP transfer and drop the ok,
++    // which aborts the sender's run. Only reclaim/mount when the card was
++    // actually released to ESP3D, or is not mounted yet.
++    if(!released_to_external && fatfs != NULL)
++        return Status_OK;
++
+     return sdcard_reclaim_from_external() ? Status_OK : Status_SDMountError;
+ }
+ 
+@@ -292,8 +334,8 @@ FLASHMEM sdcard_events_t *sdcard_init (void)
      };
  
      PROGMEM static const status_detail_t status_detail[] = {

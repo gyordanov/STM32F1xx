@@ -68,9 +68,9 @@ extern uint32_t diskio_d1s_diagnostics (void);
 #define D1S_MPG_GATE_ENABLE 0
 #endif
 #if D1S_CTRLDBG_ENABLE
-#define HIMILL_D1S_PLUGIN_VERSION "0.13-ctrldbg"
+#define HIMILL_D1S_PLUGIN_VERSION "0.14-ctrldbg"
 #else
-#define HIMILL_D1S_PLUGIN_VERSION "0.13"
+#define HIMILL_D1S_PLUGIN_VERSION "0.14"
 #endif
 #define D1S_PROBE_PROTECT_POLL_MS 10U
 #define D1S_PROBE_PROTECT_SAMPLES 2U
@@ -1461,8 +1461,14 @@ static bool mux_find_uart (io_stream_properties_t const *props, void *data)
 // secondary toolchange-confirm path) and can't bind through the regular
 // SAFETY_DOOR_ENABLE path either, for the same EXTI-collision reason
 // (PB1 vs PC1 / Y limit).
+// Smart front button (PC4): tap = stop/ack, hold this long = resume/start.
+#define D1S_BUTTON_HOLD_RESUME_MS 3000
 static bool button_pc4_prev_pressed = false;
 static bool button_pb1_prev_pressed = false;
+static uint32_t button_pc4_press_start_ms = 0;
+static bool button_pc4_press_began_in_hold = false;
+static bool button_pc4_hold_resume_fired = false;
+static int8_t button_pc4_progress_lit = -1;   // front-strip progress-bar pixels lit (-1 = not animating)
 
 static bool himill_prepare_toolchange_button (sys_state_t state)
 {
@@ -1813,14 +1819,69 @@ static void himill_poll_buttons (sys_state_t state)
     // raw, which during M6 is interpreted as "cancel the toolchange". The
     // FlexiHAL behavior of "physical CYCLE_START button confirms M6" only
     // works because that path uses the control-signal callback. Match it.
+    // Smart front button (PC4 = front-panel + inside-door, parallel-wired).
+    // tap = stop/ack, hold 3s = go:
+    //   CYCLE/JOG   -> tap: feed-hold (stop is never gated)
+    //   TOOL_CHANGE -> tap: cycle-start (ack M6; the only tap-to-go)
+    //   IDLE        -> tap: cycle-start (start queued motion; no-op if none)
+    //   HOLD        -> hold D1S_BUTTON_HOLD_RESUME_MS: cycle-start (resume/start),
+    //                  covering feed-hold, M0/M1 and the pause-on-SD M1 gate.
+    //                  Tap ignored.
+    //   ALARM/DOOR/SLEEP/HOMING -> inert.
+    // Release-gate: only a press that BEGAN in HOLD arms the 3s resume, so the
+    // continuous RUN-tap press that just triggered a feed-hold can't roll into a
+    // resume. Dispatch via hal.control.interrupt_callback (the M6-trap-safe path).
     bool pc4_pressed = !DIGITAL_IN(GPIOC, 4);
-    if (pc4_pressed && !button_pc4_prev_pressed && hal.control.interrupt_callback
-            && himill_prepare_toolchange_button(state)) {
-        control_signals_t signals = {0};
-        signals.cycle_start = On;
-        d1s_ctrl_dbg_pin(D1S_DBG_SRC_PC4, signals);
-        hal.control.interrupt_callback(signals);
+    bool pc4_edge = pc4_pressed && !button_pc4_prev_pressed;
+    if (pc4_edge) {
+        button_pc4_press_start_ms = hal.get_elapsed_ticks ? hal.get_elapsed_ticks() : 0;
+        button_pc4_press_began_in_hold = (state == STATE_HOLD);
+        button_pc4_hold_resume_fired = false;
     }
+    if (hal.control.interrupt_callback) {
+        control_signals_t signals = {0};
+        if (pc4_edge) {
+            if (state == STATE_CYCLE || state == STATE_JOG)
+                signals.feed_hold = On;                       // running -> stop now
+            else if (state != STATE_HOLD && himill_prepare_toolchange_button(state))
+                signals.cycle_start = On;                     // toolchange ack / idle start
+            // STATE_HOLD tap ignored -> resume needs the 3s hold (below).
+        } else if (pc4_pressed && button_pc4_press_began_in_hold && !button_pc4_hold_resume_fired
+                   && state == STATE_HOLD && hal.get_elapsed_ticks
+                   && (int32_t)(hal.get_elapsed_ticks() - button_pc4_press_start_ms) >= D1S_BUTTON_HOLD_RESUME_MS) {
+            signals.cycle_start = On;                          // held 3s in HOLD -> resume
+            button_pc4_hold_resume_fired = true;
+        }
+        if (signals.value) {
+            d1s_ctrl_dbg_pin(D1S_DBG_SRC_PC4, signals);
+            hal.control.interrupt_callback(signals);
+        }
+    }
+
+    // Front 24-px strip = a progress bar while holding to resume/start: fills
+    // green over D1S_BUTTON_HOLD_RESUME_MS. Throttled to re-send only when the
+    // lit count changes (~1 write / 125ms over the 3s) so the IRQ-off WS2812
+    // burst stays rare; the machine is paused (HOLD) so steppers are idle and
+    // DMA-RX keeps UART RX alive. On release / fire / leaving HOLD, restore the
+    // normal state colour via himill_rgb_update_state().
+    if (himill_rgb_runtime_enabled && pc4_pressed && button_pc4_press_began_in_hold
+            && !button_pc4_hold_resume_fired && state == STATE_HOLD && hal.get_elapsed_ticks) {
+        uint32_t held = hal.get_elapsed_ticks() - button_pc4_press_start_ms;
+        int8_t lit = held >= D1S_BUTTON_HOLD_RESUME_MS
+                       ? HIMILL_FRONT_RGB_LEDS
+                       : (int8_t)((held * HIMILL_FRONT_RGB_LEDS) / D1S_BUTTON_HOLD_RESUME_MS);
+        if (lit != button_pc4_progress_lit) {
+            button_pc4_progress_lit = lit;
+            for (uint_fast8_t i = 0; i < HIMILL_FRONT_RGB_LEDS; i++)
+                himill_front_leds[i] = i < (uint_fast8_t)lit ? himill_rgb_color(0, 64, 0)
+                                                             : himill_rgb_color(10, 7, 0);
+            himill_rgb0_write_raw();
+        }
+    } else if (button_pc4_progress_lit >= 0) {
+        button_pc4_progress_lit = -1;
+        himill_rgb_update_state(state);   // press ended / fired -> restore normal display
+    }
+
     button_pc4_prev_pressed = pc4_pressed;
 
     bool pb1_pressed = !DIGITAL_IN(GPIOB, 1);
@@ -2485,7 +2546,13 @@ static bool d1s_proxy_valid_path (const char *path)
 
 static bool d1s_proxy_sd_ready (void)
 {
-    if(d1s_upload.active || sdcard_is_released_to_external() ||
+    // Reclaim-on-demand: a card released to ESP3D is NOT "busy" here — take it
+    // back like d1s_upload_start does (sdcard_reclaim_from_external below).
+    // Bailing "busy" on sdcard_is_released_to_external() wedged every proxy op
+    // (file list, etc.) once sticky-DONE stopped eager-reclaiming on
+    // [D1S_SD_DONE]: released_to_external stayed true → [D1SP:ERR:busy] → the
+    // sender's HTTP SD ops all 503'd {"status":"busy"}.
+    if(d1s_upload.active ||
         state_get() != STATE_IDLE || himill_sd_job_active()) {
         d1s_proxy_send_error("busy");
         return false;
@@ -2727,10 +2794,13 @@ static status_code_t himill_user_command (char *line)
         if (mux_last_rx_owner != mux_uart)
             return on_user_command ? on_user_command(line) : Status_Unhandled;
 
-        if(sdcard_reclaim_from_external_done())
-            mux_uart_write_direct("[D1S_SD_ACK]" ASCII_EOL);
-        else
-            mux_uart_write_direct("[D1S_SD_BUSY:mount]" ASCII_EOL);
+        // Sticky ownership: do NOT eagerly remount here. ESP3D is done writing,
+        // but remounting inside this SD-busy window races grblHAL's own next SD
+        // op (notably the sender's $FM before a run) and can stall/drop its ok,
+        // aborting the run. Just ACK; grblHAL reclaims lazily on the next $FM /
+        // SD access (sdcard_reclaim_from_external), by which point ESP3D is idle
+        // and ACKs the reclaim fast. Restores the pre-0a6a58e sticky behaviour.
+        mux_uart_write_direct("[D1S_SD_ACK]" ASCII_EOL);
 
         return himill_sd_private_command_handled();
     }
