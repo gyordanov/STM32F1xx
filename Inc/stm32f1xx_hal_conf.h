@@ -142,8 +142,36 @@
 /**
   * @brief This is the HAL system configuration section
   */     
-#define  VDD_VALUE                    ((uint32_t)3300) /*!< Value of VDD in mv */           
-#define  TICK_INT_PRIORITY            ((uint32_t)0)    /*!< tick interrupt priority (lowest by default)  */            
+#define  VDD_VALUE                    ((uint32_t)3300) /*!< Value of VDD in mv */
+#if defined(BOARD_HIMILL_D1S)
+// D1S (himill_d1s.c): SysTick drives serialRealtimePoll() every 1 ms, which
+// can call protocol_enqueue_realtime_command() -> hal.stream.cancel_read_buffer()
+// (mux_cancel_read_buffer -> serialRxCancel/serial1RxCancel), mutating the
+// same rxbuf head/tail and dma_rx_tail that USART2/UART4/USB RX and the
+// mainline reader touch. Those comms IRQs (serial.c HAL_NVIC_SetPriority
+// calls) and USB (usbd_conf.c) all sit at NVIC priority 1; leaving SysTick at
+// priority 0 lets it preempt any of them (or mainline code, which is
+// preemptible by definition) mid ring-pointer update, corrupting head/tail
+// (a lost 0x18 or a duplicated byte). Lower numbers preempt higher ones on
+// Cortex-M (0 = highest), so raising this value to 1 makes SysTick co-equal
+// with those producers -- equal priority cannot preempt (pends and runs in
+// turn instead), removing the race without touching any of the several
+// enqueue/cancel call sites individually.
+// STEPPER_TIMER_IRQn (driver.c) stays at 0 and is unaffected in either
+// direction: it and SysTick were already mutually non-preempting at the tied
+// priority 0, and moving SysTick to 1 only means STEPPER_TIMER can preempt a
+// SysTick tick in progress (desirable) while SysTick can no longer preempt
+// it (already true before this change). No watchdog on this board depends on
+// SysTick's old priority; HAL_GetTick() consumers only need ~1 ms accuracy,
+// not zero jitter against a same-priority byte-level ISR.
+// Scoped to D1S only -- this header is shared by every board this driver
+// tree supports, and the race above is specific to D1S's DMA-RX-from-SysTick
+// architecture (SERIAL_DMA_RX + the mux layer's cancel_read_buffer chain);
+// other boards keep the priority they were built and tested with.
+#define  TICK_INT_PRIORITY            ((uint32_t)1)    /*!< tick interrupt priority -- co-equal with comms IRQs on D1S, see above  */
+#else
+#define  TICK_INT_PRIORITY            ((uint32_t)0)    /*!< tick interrupt priority (lowest by default)  */
+#endif
 #define  USE_RTOS                     0
 #define  PREFETCH_ENABLE              1
 

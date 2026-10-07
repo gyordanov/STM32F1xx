@@ -387,6 +387,16 @@ void serialRegisterStreams (void) {}; // No serial ports!
 
 static uint8_t dma_rx[RX_BUFFER_SIZE];          // raw DMA landing buffer (hardware-filled)
 static volatile uint_fast16_t dma_rx_tail;      // serialRealtimePoll() read position into dma_rx
+static uint_fast16_t dma_rx_wraps_consumed;     // wraps of dma_rx_wraps already accounted for
+
+// Incremented by DMA1_Channel6_IRQHandler (Src/stm32f1xx_it.c) on every DMA
+// Transfer-Complete, i.e. every time the hardware write pointer completes one
+// lap of the circular dma_rx[] buffer. Not static: the ISR lives in a
+// different translation unit (matches the hpcd_USB_FS extern convention
+// already used for cross-file peripheral state in stm32f1xx_it.c). ISR work
+// is the increment only; overrun detection/recovery happens in
+// serialRealtimePoll() below, off the interrupt path.
+volatile uint32_t dma_rx_wraps;
 
 // DMA write position into dma_rx, derived from the channel's remaining count.
 static inline uint_fast16_t serialDmaRxHead (void)
@@ -402,9 +412,42 @@ void serialRealtimePoll (void)
     if(enqueue_realtime_command == NULL)            // stream handler not installed yet
         return;
 
+    // Overrun check, before touching dma_rx_tail: dma_rx_wraps (incremented by
+    // DMA1_Channel6_IRQHandler on every hardware Transfer-Complete, i.e. every
+    // full lap of the circular dma_rx[] the DMA controller completes) versus
+    // dma_rx_wraps_consumed (laps this drain has itself completed via
+    // dma_rx_tail wrapping, below). A CPU stall (flash erase/program, a long
+    // critical section) can let the DMA write pointer lap the still-unread
+    // tail during the stall -- landing exactly on dma_rx_tail makes
+    // serialDmaRxHead() == dma_rx_tail, which the while() below reads as "no
+    // data pending" even though a full buffer's worth was silently
+    // overwritten. delta > 1 is unambiguous (more than one full lap missed);
+    // delta == 1 with the current head numerically at or ahead of tail means
+    // the just-completed lap has (partly) overwritten what looked like
+    // still-unread bytes -- head == tail here is the exactly-lapped full
+    // buffer, not the empty ring (a benign head == tail is only reachable
+    // after the drain below has itself wrapped, which resyncs consumed and
+    // makes delta 0). Either way declare overrun,
+    // discard the stale/mixed window, and flag it the same way the stock
+    // software-ring-full path below does (rxbuf.overflow) so grbl reports a
+    // stream error instead of silently continuing on data that may be a
+    // mix of two different moments in time.
+    {
+        uint32_t wraps = dma_rx_wraps;                  // snapshot; ISR-incremented
+        uint_fast16_t delta = (uint_fast16_t)(wraps - dma_rx_wraps_consumed);
+        uint_fast16_t head = serialDmaRxHead();
+
+        if(delta > 1 || (delta == 1 && head >= dma_rx_tail)) {
+            dma_rx_tail = head;                         // resync to current DMA position
+            dma_rx_wraps_consumed = wraps;
+            rxbuf.overflow = 1;                         // same signal the software-ring-full path uses
+        }
+    }
+
     while(dma_rx_tail != serialDmaRxHead()) {
         uint8_t data = dma_rx[dma_rx_tail];
-        dma_rx_tail = (dma_rx_tail + 1) & (RX_BUFFER_SIZE - 1);
+        if((dma_rx_tail = (dma_rx_tail + 1) & (RX_BUFFER_SIZE - 1)) == 0)
+            dma_rx_wraps_consumed++;
         if(!enqueue_realtime_command(data)) {       // not realtime -> line data
             uint16_t next_head = BUFNEXT(rxbuf.head, rxbuf);
             if(next_head == rxbuf.tail)             // software ring full
@@ -446,6 +489,10 @@ void serialRxFlush (void)
 {
 #if SERIAL_DMA_RX
     dma_rx_tail = serialDmaRxHead();    // discard un-scanned raw DMA bytes
+    dma_rx_wraps_consumed = dma_rx_wraps; // jumping the tail can cross a wrap boundary
+                                           // without serialRealtimePoll's loop seeing it --
+                                           // resync here or a later legitimate poll can
+                                           // read the stale gap as a false-positive overrun
 #endif
     rxbuf.tail = rxbuf.head;
 }
@@ -457,6 +504,7 @@ static void serialRxCancel (void)
 {
 #if SERIAL_DMA_RX
     dma_rx_tail = serialDmaRxHead();    // discard un-scanned raw DMA bytes
+    dma_rx_wraps_consumed = dma_rx_wraps; // see serialRxFlush
 #endif
     rxbuf.data[rxbuf.head] = ASCII_CAN;
     rxbuf.tail = rxbuf.head;
@@ -656,14 +704,20 @@ static const io_stream_t *serialInit (uint32_t baud_rate)
 
 #if SERIAL_DMA_RX
         // Circular DMA1 Ch6 (USART2_RX) -> dma_rx. periph->mem, 8-bit,
-        // memory-increment, circular, medium priority, no DMA interrupts (we
-        // poll CNDTR from serialRealtimePoll). serialSetBaudRate enables CR3 DMAR.
+        // memory-increment, circular, medium priority. CNDTR is still polled
+        // from serialRealtimePoll for the normal drain path; the
+        // Transfer-Complete interrupt is enabled only to count wraps
+        // (dma_rx_wraps) for overrun detection -- see serialRealtimePoll.
+        // serialSetBaudRate enables CR3 DMAR.
         __HAL_RCC_DMA1_CLK_ENABLE();
         UART0_DMA_RX->CCR = 0;                           // disable while configuring
         UART0_DMA_RX->CPAR = (uint32_t)&UART0->DR;       // source: USART data register
         UART0_DMA_RX->CMAR = (uint32_t)dma_rx;           // dest: raw DMA landing buffer
         UART0_DMA_RX->CNDTR = RX_BUFFER_SIZE;
-        UART0_DMA_RX->CCR = DMA_CCR_MINC | DMA_CCR_CIRC | DMA_CCR_PL_0;
+        UART0_DMA_RX->CCR = DMA_CCR_MINC | DMA_CCR_CIRC | DMA_CCR_PL_0 | DMA_CCR_TCIE;
+        dma_rx_wraps = dma_rx_wraps_consumed = 0;
+        HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 1, 0);  // co-equal with UART0_IRQ/SysTick, see stm32f1xx_hal_conf.h
+        HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
         UART0_DMA_RX->CCR |= DMA_CCR_EN;                 // start
         dma_rx_tail = rxbuf.tail = rxbuf.head = 0;
 #endif

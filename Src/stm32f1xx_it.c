@@ -58,6 +58,9 @@
 
 /* External variables --------------------------------------------------------*/
 extern PCD_HandleTypeDef hpcd_USB_FS;
+#if SERIAL_DMA_RX
+extern volatile uint32_t dma_rx_wraps; // Src/serial.c: DMA-RX overrun detection
+#endif
 
 /* USER CODE BEGIN EV */
 
@@ -240,6 +243,32 @@ void USB_LP_CAN1_RX0_IRQHandler(void)
   /* USER CODE BEGIN USB_LP_CAN1_RX0_IRQn 1 */
 
   /* USER CODE END USB_LP_CAN1_RX0_IRQn 1 */
+}
+
+#endif
+
+/**
+  * @brief This function handles DMA1 channel 6 global interrupt (USART2 RX,
+  *        HiMill D1S SERIAL_DMA_RX). Transfer-Complete only: counts a full
+  *        lap of the circular landing buffer for overrun detection in
+  *        serialRealtimePoll (Src/serial.c). Counter increment only, no
+  *        other work on this path.
+  */
+
+#if SERIAL_DMA_RX
+
+void DMA1_Channel6_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA1_Channel6_IRQn 0 */
+
+  /* USER CODE END DMA1_Channel6_IRQn 0 */
+  if(DMA1->ISR & DMA_ISR_TCIF6) {
+    DMA1->IFCR = DMA_IFCR_CTCIF6;
+    dma_rx_wraps++;
+  }
+  /* USER CODE BEGIN DMA1_Channel6_IRQn 1 */
+
+  /* USER CODE END DMA1_Channel6_IRQn 1 */
 }
 
 #endif

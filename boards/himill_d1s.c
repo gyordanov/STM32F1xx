@@ -68,9 +68,9 @@ extern uint32_t diskio_d1s_diagnostics (void);
 #define D1S_MPG_GATE_ENABLE 0
 #endif
 #if D1S_CTRLDBG_ENABLE
-#define HIMILL_D1S_PLUGIN_VERSION "0.14-ctrldbg"
+#define HIMILL_D1S_PLUGIN_VERSION "0.15-ctrldbg"
 #else
-#define HIMILL_D1S_PLUGIN_VERSION "0.14"
+#define HIMILL_D1S_PLUGIN_VERSION "0.15"
 #endif
 #define D1S_PROBE_PROTECT_POLL_MS 10U
 #define D1S_PROBE_PROTECT_SAMPLES 2U
@@ -612,10 +612,23 @@ static void himill_rgb_update_state_or_defer (sys_state_t state)
     // UARTs at 115200 baud. Jogging flips Idle/Jog rapidly, exactly while
     // senders are likely streaming $J= lines, so postpone the LED update
     // until jogging has been quiet for a short window.
+    //
+    // HOLD/SAFETY_DOOR entry is deferred the same way, but on a different
+    // condition: sys.step_control.execute_hold is On for as long as the
+    // planner is still forcing a deceleration to zero (grbl/state_machine.c
+    // initiate_hold), so a refresh fired synchronously on state entry can
+    // land with all IRQs off while steppers are still decelerating -- a
+    // ~0.6-0.7 ms step-pulse gap. Deferring until execute_hold clears
+    // (state_await_hold's EXEC_CYCLE_COMPLETE, same signal stepper.c/
+    // sleep.c treat as "motion actually stopped") avoids that regardless of
+    // how the hold was entered. If there was nothing to decelerate,
+    // execute_hold was never set and the refresh fires immediately below,
+    // same as before this change.
     if (!himill_rgb_runtime_enabled)
         return;
 
-    if ((state & STATE_JOG) || (state == STATE_IDLE && himill_rgb_update_deferred)) {
+    if ((state & STATE_JOG) || (state == STATE_IDLE && himill_rgb_update_deferred) ||
+        ((state & (STATE_HOLD|STATE_SAFETY_DOOR)) && sys.step_control.execute_hold)) {
         himill_rgb_update_deferred = true;
         himill_rgb_deferred_ticks = hal.get_elapsed_ticks ? hal.get_elapsed_ticks() : 0;
         return;
@@ -629,8 +642,18 @@ static void himill_rgb_flush_deferred_state (sys_state_t state)
 {
     uint32_t now = hal.get_elapsed_ticks ? hal.get_elapsed_ticks() : 0;
 
-    if (himill_rgb_runtime_enabled && himill_rgb_update_deferred &&
-        !(state & STATE_JOG) && (now - himill_rgb_deferred_ticks) >= HIMILL_RGB_JOG_DEFER_MS) {
+    if (!himill_rgb_runtime_enabled || !himill_rgb_update_deferred)
+        return;
+
+    if (state & (STATE_HOLD|STATE_SAFETY_DOOR)) {
+        if (!sys.step_control.execute_hold) {          // deceleration finished -> quiescent
+            himill_rgb_update_deferred = false;
+            himill_rgb_update_state(state);
+        }
+        return;
+    }
+
+    if (!(state & STATE_JOG) && (now - himill_rgb_deferred_ticks) >= HIMILL_RGB_JOG_DEFER_MS) {
         himill_rgb_update_deferred = false;
         himill_rgb_update_state(state);
     }
@@ -891,6 +914,17 @@ static volatile uint32_t  esp_tunnel_until_ms = 0;
 // drainer runs so the re-entrant call skips and the outer write completes in
 // order. USB TX still drains via the host/USB ISR, so the outer write unblocks.
 static bool esp_tunnel_draining = false;
+
+// Set for the duration of any SD ownership take/reclaim handshake wait
+// (himill_sd_reclaim_from_esp3d), cleared on every exit from it including
+// early returns. The reclaim wait pumps protocol_execute_realtime() ->
+// himill_poll_buttons() while blocking on UART2 for ESP3D's [D1S_SD_ACK]/
+// [D1S_SD_BUSY reply; if an [ESP*] tunnel window is open at the same time
+// (e.g. a slow [ESP420] request over USB), the tunnel drainer above also
+// consumes UART2 RX looking for its own response and can eat the handshake
+// line, timing out the reclaim. While this flag is set the drainer backs
+// off immediately so the handshake owns UART2 RX exclusively.
+static bool sd_handshake_active = false;
 
 #if D1S_CTRLDBG_ENABLE
 static bool mux_stream_connected (const io_stream_t *s);
@@ -1204,6 +1238,28 @@ static bool mux_line_gate (const io_stream_t *s, int32_t c)
     return !mux_drop_line;
 }
 
+// A dropped line (mux_line_gate refused delivery) leaves the sender that sent
+// it waiting forever for an `ok` — its char-counter stalls and that stream
+// looks frozen (e.g. a phantom-DTR flip mid-job while USB silently takes
+// over). Reply error:78 (Status_AccessDenied -- closest existing code for
+// "not currently allowed to submit input"; the machine may well be IDLE, so
+// Status_IdleError would mislead) on the OBSERVER stream only, once per
+// complete dropped line, so its sender fails fast instead of hanging.
+// had_owner is "was a line already in progress on this stream before byte c"
+// (captured by the caller BEFORE mux_note_rx_byte runs) -- gates on the
+// terminator that actually ends accumulated content, so a CRLF pair (whose
+// second byte starts and instantly ends an empty "line") reports only once.
+static void mux_report_dropped_line (const io_stream_t *s, int32_t c, bool had_owner)
+{
+    if (!had_owner || !(c == ASCII_CR || c == ASCII_LF))
+        return;
+
+    if (s && s->write) {
+        s->write("[MSG:line ignored - not active controller]" ASCII_EOL);
+        s->write("error:78" ASCII_EOL);
+    }
+}
+
 static int32_t mux_read (void)
 {
     for (;;) {
@@ -1239,10 +1295,12 @@ static int32_t mux_read (void)
                     continue;
                 }
                 {
+                    bool had_owner = mux_rx_line_owner != NULL;
                     bool deliver = mux_line_gate(s, c);
                     mux_note_rx_byte(s, c);
                     if (deliver)
                         return c;
+                    mux_report_dropped_line(s, c, had_owner);
                     continue;
                 }
 
@@ -1277,10 +1335,12 @@ static int32_t mux_read (void)
         }
 
         {
+            bool had_owner = mux_rx_line_owner != NULL;
             bool deliver = mux_line_gate(s, c);
             mux_note_rx_byte(s, c);
             if (deliver)
                 return c;
+            mux_report_dropped_line(s, c, had_owner);
             continue;
         }
     }
@@ -1463,8 +1523,18 @@ static bool mux_find_uart (io_stream_properties_t const *props, void *data)
 // (PB1 vs PC1 / Y limit).
 // Smart front button (PC4): tap = stop/ack, hold this long = resume/start.
 #define D1S_BUTTON_HOLD_RESUME_MS 3000
+// PC4 is single-sample edge-detected against a raw GPIO read in a tight poll
+// loop; a lone noise sample flipping the level is read as a full press/
+// release. In STATE_TOOL_CHANGE a spurious press = cycle-start (ack M6) with
+// the operator's hands potentially still at the spindle, so require this many
+// consecutive identical raw samples before accepting a level change (either
+// edge) -- mirrors D1S_PROBE_PROTECT_SAMPLES. A 2-3 poll-cycle shift is
+// negligible against the 3 s hold-to-go timer.
+#define D1S_BUTTON_DEBOUNCE_SAMPLES 2U
 static bool button_pc4_prev_pressed = false;
 static bool button_pb1_prev_pressed = false;
+static bool button_pc4_debounced_pressed = false;
+static uint8_t button_pc4_debounce_count = 0;
 static uint32_t button_pc4_press_start_ms = 0;
 static bool button_pc4_press_began_in_hold = false;
 static bool button_pc4_hold_resume_fired = false;
@@ -1831,7 +1901,17 @@ static void himill_poll_buttons (sys_state_t state)
     // Release-gate: only a press that BEGAN in HOLD arms the 3s resume, so the
     // continuous RUN-tap press that just triggered a feed-hold can't roll into a
     // resume. Dispatch via hal.control.interrupt_callback (the M6-trap-safe path).
-    bool pc4_pressed = !DIGITAL_IN(GPIOC, 4);
+    // Debounce: only accept a raw level change once it has been read
+    // D1S_BUTTON_DEBOUNCE_SAMPLES times in a row; a single differing sample
+    // resets the run instead of flipping the debounced level.
+    bool pc4_raw_pressed = !DIGITAL_IN(GPIOC, 4);
+    if (pc4_raw_pressed == button_pc4_debounced_pressed)
+        button_pc4_debounce_count = 0;
+    else if (++button_pc4_debounce_count >= D1S_BUTTON_DEBOUNCE_SAMPLES) {
+        button_pc4_debounced_pressed = pc4_raw_pressed;
+        button_pc4_debounce_count = 0;
+    }
+    bool pc4_pressed = button_pc4_debounced_pressed;
     bool pc4_edge = pc4_pressed && !button_pc4_prev_pressed;
     if (pc4_edge) {
         button_pc4_press_start_ms = hal.get_elapsed_ticks ? hal.get_elapsed_ticks() : 0;
@@ -1903,8 +1983,10 @@ static void himill_poll_buttons (sys_state_t state)
     // [ESP*] response tunnel: while open, drain UART2 RX directly to USB CDC
     // TX so the user sees ESP3D's JSON answer on the USB serial they sent
     // the command from. Bypasses mux_active so it works while DTR-mux is
-    // pointed at USB.
-    if (esp_tunnel_until_ms != 0 && !esp_tunnel_draining) {
+    // pointed at USB. Back off entirely while an SD ownership handshake owns
+    // UART2 RX (see sd_handshake_active) -- draining here would race it for
+    // the same bytes and can eat the [D1S_SD_ACK]/[D1S_SD_BUSY reply.
+    if (esp_tunnel_until_ms != 0 && !esp_tunnel_draining && !sd_handshake_active) {
         if ((int32_t)(hal.get_elapsed_ticks() - esp_tunnel_until_ms) >= 0) {
             esp_tunnel_close();
         } else if (mux_uart && mux_uart->read && mux_usb && mux_usb->write_char) {
@@ -1996,12 +2078,23 @@ static bool himill_sd_reclaim_from_esp3d (void)
     uint_fast8_t line_len = 0;
     uint32_t start = hal.get_elapsed_ticks();
 
+    // See sd_handshake_active: keeps the [ESP*] tunnel drainer off UART2 RX
+    // for the duration of this handshake. Cleared on every exit below.
+    sd_handshake_active = true;
+
     // While waiting for the ACK/BUSY reply this loop consumes UART2 bytes
     // wholesale: realtime characters never reach the ring (mux_uart_enqueue_rt
     // intercepts them at enqueue time), but ordinary command lines ESP3D
     // forwards inside this window (<= D1S_SD_TAKE_TIMEOUT_MS) are dropped.
     // ESP3D must pause client forwarding between receiving [D1S_SD_TAKE]
     // and replying.
+    // This holds regardless of what this loop's own reads are doing: on the
+    // SERIAL_DMA_RX build, serialRealtimePoll() (serial.c) runs from the 1 ms
+    // SysTick tick independently of the main-loop/board-init call stack (see
+    // 5db568c) and strips/dispatches realtime bytes to
+    // protocol_enqueue_realtime_command before they can ever land in the
+    // software rxbuf this loop's mux_uart->read() drains — so a realtime byte
+    // arriving here is handled on the next tick, not swallowed.
     mux_uart_write_direct("[D1S_SD_TAKE]" ASCII_EOL);
 
     do {
@@ -2018,24 +2111,30 @@ static bool himill_sd_reclaim_from_esp3d (void)
                 if(!strcmp(line, "[D1S_SD_ACK]")) {
                     BYTE power = 0;
                     disk_ioctl(0, CTRL_POWER, &power);
+                    sd_handshake_active = false;
                     return true;
                 }
 
-                if(!strncmp(line, "[D1S_SD_BUSY", 12))
+                if(!strncmp(line, "[D1S_SD_BUSY", 12)) {
+                    sd_handshake_active = false;
                     return false;
+                }
             } else if(line_len < (sizeof(line) - 1))
                 line[line_len++] = (char)c;
             else
                 line_len = 0;
         }
 
-        if(!protocol_execute_realtime())
+        if(!protocol_execute_realtime()) {
+            sd_handshake_active = false;
             return false;
+        }
 
         hal.delay_ms(2, NULL);
 
     } while((hal.get_elapsed_ticks() - start) < D1S_SD_TAKE_TIMEOUT_MS);
 
+    sd_handshake_active = false;
     return false;
 }
 
@@ -2877,8 +2976,27 @@ static status_code_t himill_user_command (char *line)
         return Status_OK;
     }
 
+    // [BOOT]/[DFU] reset the MCU immediately from any state. A stray line
+    // hitting this mid-cut drops stepper enables (Z can fall) and the
+    // spindle without warning, so only allow it when idle or already
+    // alarmed/e-stopped (nothing to lose motion-wise). [BOOT!]/[DFU!] are the
+    // recovery escape hatch that bypasses the gate entirely.
+    // STATE_IDLE == 0 (no flags) so it must be compared with ==, not OR'd
+    // into the bitmask test below — see grbl/system.c for the same idiom.
+    if (!(state_get() == STATE_IDLE || (state_get() & (STATE_ALARM|STATE_ESTOP)))) {
+        // Exact match — don't swallow [BOOTSOMETHING]
+        if (strcmp(line, "[BOOT]") == 0) {
+            hal.stream.write_all("[MSG:BOOT refused - machine not idle]" ASCII_EOL);
+            return Status_OK;
+        }
+        if (strcmp(line, "[DFU]") == 0) {
+            hal.stream.write_all("[MSG:DFU refused - machine not idle]" ASCII_EOL);
+            return Status_OK;
+        }
+    }
+
     // Exact match — don't swallow [BOOTSOMETHING]
-    if (strcmp(line, "[BOOT]") == 0) {
+    if (strcmp(line, "[BOOT]") == 0 || strcmp(line, "[BOOT!]") == 0) {
         // Match the vendor app's bootloader handoff: write magic to the
         // reserved top-of-SRAM word, then request a system reset. Interrupts
         // are disabled before the write so no ISR stack traffic can collide
@@ -2896,7 +3014,7 @@ static status_code_t himill_user_command (char *line)
         return Status_OK; // not reached
     }
 
-    if (strcmp(line, "[DFU]") == 0) {
+    if (strcmp(line, "[DFU]") == 0 || strcmp(line, "[DFU!]") == 0) {
         hal.stream.write_all("[MSG:DFU]" ASCII_EOL);
         if (hal.stream.get_tx_buffer_count) {
             while (hal.stream.get_tx_buffer_count())
@@ -3430,6 +3548,23 @@ void board_init (void)
 
 #if FS_ENABLE & FS_SDCARD
             sdcard_set_reclaim_callback(himill_sd_reclaim_from_esp3d);
+
+            // SD ownership (sdcard.c's released_to_external) is RAM-only and
+            // boots false ("we own it"), so after any MCU reset — including
+            // an auto-reset-on-hardfault — while the ESP32 actually holds the
+            // card, sdcard_auto_mount()'s boot-time mount would drive SPI1
+            // against the ESP32 mid-write (two masters on one bus). Run the
+            // existing reclaim-on-demand handshake once, here, before that
+            // first automount can happen: mux_uart and hal.get_elapsed_ticks
+            // are already valid at this point in board_init. Fail-open by
+            // design (himill_sd_reclaim_from_esp3d's own 1500 ms timeout) --
+            // with no ESP present/answering this costs one bounded delay then
+            // sdcard_auto_mount proceeds exactly as before; with the ESP
+            // answering (ACK or BUSY) there is no extra delay beyond the
+            // handshake itself. Result intentionally discarded: whichever way
+            // it resolves, letting the normal boot-time mount run next is
+            // correct either way.
+            himill_sd_reclaim_from_esp3d();
 #endif
 
             // Disable grblHAL's onLinestateChanged hook by clearing
